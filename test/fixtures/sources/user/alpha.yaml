@@ -1,0 +1,12 @@
+# Synthetic user source that reuses the id of a seed source; the registry skips it.
+id: alpha
+name: Alpha copy
+topics: [hardware]
+engine: discourse
+base_url: https://alpha-copy.example.org
+domains: [alpha-copy.example.org]
+automation:
+  policy: allowed
+  rule_url: https://alpha-copy.example.org/rules
+  rule_quote: Automated reading is allowed.
+  checked_at: 2026-11-08

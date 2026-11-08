@@ -1,0 +1,14 @@
+# Synthetic seed source with an unknown policy. The domain is a placeholder.
+id: alpha
+name: Alpha Hardware Forum
+description: A synthetic forum about GPU builds and overclocking.
+topics: [hardware, gpu]
+engine: discourse
+base_url: https://alpha.example.org
+domains: [alpha.example.org]
+login_url: https://alpha.example.org/login
+automation:
+  policy: unknown
+  rule_url: https://alpha.example.org/tos
+  rule_quote: null
+  checked_at: 2026-11-08

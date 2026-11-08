@@ -1,0 +1,14 @@
+# Synthetic user source with an allowed policy.
+id: gamma
+name: Gamma Kitchen
+description: A synthetic forum about home cooking.
+topics: [cooking]
+engine: generic
+base_url: https://gamma.example.org
+domains: [gamma.example.org]
+search_url: https://gamma.example.org/search?q={query}
+automation:
+  policy: allowed
+  rule_url: https://gamma.example.org/rules
+  rule_quote: Automated reading is allowed.
+  checked_at: 2026-11-08

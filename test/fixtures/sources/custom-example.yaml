@@ -1,0 +1,43 @@
+# A synthetic source that uses every field. The domain is a placeholder.
+id: custom-example
+name: Custom example forum
+description: A synthetic forum without a known engine, searched with a POST form.
+status: untested
+topics: [vegetarian-nutrition, cooking]
+engine: custom
+base_url: https://forum.example.org
+domains: [forum.example.org, static.forum.example.org]
+login_url: https://forum.example.org/login
+search_url: null # the site searches only with POST
+read_endpoints:
+  - method: POST
+    path: /search/run*
+    note: search form of the page, read-only
+session_check:
+  url: https://forum.example.org/account
+  logged_in_selector: a.logout
+selectors:
+  search_form: "form#search"
+  search_input: "input[name=keywords]"
+  thread_list: "ol.results li a.thread-title"
+  title: "h1.thread-title"
+  post: "article.post"
+  author: ".post-author .name"
+  author_signals: ".post-author .stats"
+  date: "time[datetime]"
+  body: ".post-body"
+  quote: "blockquote.quote"
+  next_page: "a[rel=next]"
+author_signals:
+  profile_lookup: false
+automation:
+  policy: forbidden
+  rule_url: https://forum.example.org/rules#bots
+  rule_quote: No bots or automated tools.
+  checked_at: 2026-11-07
+rate_limit: { min_delay_s: 6, max_requests_per_run: 30, max_requests_per_day: 200 }
+pagination: { max_pages_per_thread: 10 }
+deny_paths: ["/account/**", messages]
+show_real_names: false
+allow_beacons: false
+enabled: false # off because the policy is forbidden

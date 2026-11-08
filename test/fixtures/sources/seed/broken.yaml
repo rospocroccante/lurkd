@@ -1,0 +1,6 @@
+# Invalid on purpose: no topics, an unknown engine and no automation block.
+id: broken
+name: Broken source
+engine: smf
+base_url: https://broken.example.org
+domains: [broken.example.org]

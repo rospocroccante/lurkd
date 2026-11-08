@@ -1,0 +1,14 @@
+# Synthetic seed source whose rules forbid bots, so it ships switched off.
+id: beta-forbidden
+name: Beta Security Board
+description: A synthetic board about network security.
+topics: [security]
+engine: xenforo
+base_url: https://beta.example.org
+domains: [beta.example.org]
+automation:
+  policy: forbidden
+  rule_url: https://beta.example.org/help/terms
+  rule_quote: "No bots."
+  checked_at: 2026-11-08
+enabled: false
