@@ -113,6 +113,7 @@ describe('createApp', () => {
     for (const d of [seedDir, userDir, uiDir]) fs.mkdirSync(d);
     fs.writeFileSync(path.join(uiDir, 'index.html'), '<!doctype html><title>lurkd</title>');
     fs.writeFileSync(path.join(uiDir, 'app.js'), 'export {};');
+    fs.writeFileSync(path.join(uiDir, 'favicon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
     fs.writeFileSync(path.join(uiDir, 'view.js'), 'export {};');
     fs.writeFileSync(path.join(uiDir, 'app.css'), 'body{}');
     fs.writeFileSync(path.join(tmp, 'package.json'), '{"secret":true}');
@@ -280,7 +281,7 @@ describe('createApp', () => {
   });
 
   describe('UI files', () => {
-    it('serves only the three UI files', async () => {
+    it('serves only the UI files and the icon', async () => {
       const page = await get('/', { cookie: COOKIE });
       expect(page.status).toBe(200);
       expect(page.headers.get('content-type')).toMatch(/text\/html/);
@@ -290,6 +291,8 @@ describe('createApp', () => {
       expect(js.headers.get('content-type')).toMatch(/javascript/);
       expect((await get('/ui/view.js', { cookie: COOKIE })).status).toBe(200);
       expect((await get('/ui/app.css', { cookie: COOKIE })).headers.get('content-type')).toMatch(/text\/css/);
+      expect((await get('/ui/favicon.svg', { cookie: COOKIE })).headers.get('content-type')).toMatch(/image\/svg\+xml/);
+      expect((await get('/ui/favicon.svg')).status).toBe(401);
       expect((await get('/ui/..%2Fpackage.json', { cookie: COOKIE })).status).toBe(404);
       expect((await get('/ui/../package.json', { cookie: COOKIE })).status).toBe(404);
       expect((await get('/ui/index.html', { cookie: COOKIE })).status).toBe(404);

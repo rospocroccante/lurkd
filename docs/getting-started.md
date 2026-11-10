@@ -1,10 +1,15 @@
 # Getting started
 
-You need macOS or Linux and Node 22.20 or later. Windows is not supported.
+## Requirements
+
+- macOS or Linux. Windows is not supported.
+- Node 22.20 or later.
+- Network access on the first start, to download Chromium.
+- An AI coding agent that speaks MCP or can run shell commands. Claude Code, Codex, Cline, Cursor and Gemini CLI are the hosts this version targets.
 
 ## Install
 
-The package is not on npm yet, and `npm i -g github:rospocroccante/lurkd` fails on npm 11, so build a tarball from a clone. The repository is private, so the clone needs a GitHub login that can read it:
+The package is not on npm yet, and `npm i -g github:rospocroccante/lurkd` does not work on npm 11: the global install of a Git dependency runs the `prepare` build without the dev dependencies, so the TypeScript compiler is missing. Build a tarball from a clone instead. The repository is private, so the clone needs a GitHub login that can read it:
 
 ```sh
 git clone https://github.com/rospocroccante/lurkd.git
@@ -16,27 +21,19 @@ npm i -g ./lurkd-0.1.0.tgz
 lurkd --version
 ```
 
-The version in the file name comes from `package.json`. npm 11 may print an `allowScripts` warning about `prepare`, which is only a warning. better-sqlite3 ships prebuilt binaries for macOS and Linux (x64, arm64 and musl), so you need no compiler.
+The tarball name carries the version from `package.json`, so use the file name `npm pack` prints if it differs. npm 11 may print an `allowScripts` warning about `prepare`. It is only a warning. The one native dependency, better-sqlite3, ships prebuilt binaries for macOS and Linux (x64, arm64 and musl), so no compiler is needed.
 
-Do not run `npx lurkd`. The name is unregistered on npm, so npx would run whatever package someone else publishes under it.
+Do not run `npx lurkd`. The name is not registered on npm, so npx would fetch and run whatever package someone else publishes under it.
 
-## Add the skill
+## Add the skill and connect your agent
 
-```sh
-DISABLE_TELEMETRY=1 npx skills add rospocroccante/lurkd --skill lurkd --agent claude-code --global
-```
-
-The CLI fetches the skill from the repository over Git, whatever way you installed the package. Swap `claude-code` for `codex`, `cline`, `cursor` or `gemini-cli`, and add `--list` first to see what it finds. If you prefer to copy by hand, put `skills/lurkd` from your clone into your host's skills folder.
-
-## Connect your agent
-
-Every host runs `lurkd mcp` over stdio. For Claude Code:
+The skill tells the agent how to use lurkd and to treat forum text as data. The MCP server entry is the same for every host, `lurkd mcp` over stdio. For Claude Code:
 
 ```sh
 claude mcp add --scope user lurkd -- lurkd mcp
 ```
 
-Gemini CLI installs the repository as an extension with `gemini extensions install https://github.com/rospocroccante/lurkd`. Cursor, Codex and Cline take a small config entry, which the README shows for each. If a host rejects tool names that contain a dot, register `lurkd mcp --tool-names=underscore` instead. Tool result text still names the dotted forms (for example `source.fetch`), and agents map them to the underscore names.
+[Connecting your agent](hosts.md) has the skill install and the setup for Gemini CLI, Cursor, Codex and Cline, plus the underscore tool names for hosts that reject dots.
 
 ## First start
 
@@ -44,4 +41,8 @@ Gemini CLI installs the repository as an extension with `gemini extensions insta
 lurkd start
 ```
 
-The first start downloads Chromium, then opens the lurkd page in your default browser. After that, any tool call or CLI command starts the server when it is not running. `lurkd stop` shuts it down.
+The first start downloads Chromium through Playwright, which takes a minute or two and prints a line to stderr. After that it starts one headless browser, a local server on 127.0.0.1 and your default browser, which opens the lurkd page. `lurkd start --no-open` prints the address without opening it, and `lurkd stop` shuts everything down. The address ends in `?t=<token>`. The token is new each time the server starts.
+
+You rarely need to run `lurkd start` yourself. Any tool call or CLI command starts the server if it is not running. The command is useful when you want the page.
+
+Next, [log in](logging-in.md) to a source.

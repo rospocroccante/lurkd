@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="lurkd">
+  <path d="M32 8H88Q112 8 112 32V72Q112 96 88 96H58L34 116V96H32Q8 96 8 72V32Q8 8 32 8Z" fill="#B8F03A"/>
+  <path d="M20 52H100Q60 92 20 52Z" fill="#27302B"/>
+  <path d="M44 52A16 16 0 0 0 76 52Z" fill="#B8F03A"/>
+  <circle cx="66" cy="57" r="4" fill="#27302B"/>
+</svg>

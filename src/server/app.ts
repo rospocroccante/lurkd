@@ -56,6 +56,7 @@ const UI_FILES: Record<string, string> = {
   'app.js': 'text/javascript; charset=utf-8',
   'view.js': 'text/javascript; charset=utf-8',
   'app.css': 'text/css; charset=utf-8',
+  'favicon.svg': 'image/svg+xml',
 };
 
 // The page loads its own script and stylesheet only, and no other site may frame it.

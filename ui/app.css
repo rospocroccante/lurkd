@@ -4,8 +4,10 @@
   --fg: #1d1f21;
   --muted: #5d6166;
   --line: #d6d8da;
-  --accent: #1d5fd1;
+  --accent: #4d7c0f;
   --accent-fg: #ffffff;
+  --brand-bubble: #27302b;
+  --brand-eye: #b8f03a;
   --ok-bg: #e3f3e6;
   --ok-fg: #1b5e2b;
   --warn-bg: #fbefd3;
@@ -27,8 +29,10 @@
     --fg: #e6e7e8;
     --muted: #a0a5aa;
     --line: #373b3f;
-    --accent: #6ea2ff;
-    --accent-fg: #0c1b33;
+    --accent: #b8f03a;
+    --accent-fg: #1c2410;
+    --brand-bubble: #b8f03a;
+    --brand-eye: #27302b;
     --ok-bg: #1d3524;
     --ok-fg: #9fdcad;
     --warn-bg: #3d3010;
@@ -263,3 +267,7 @@ dialog .actions { margin-top: 16px; justify-content: flex-end; }
   header.top, main, footer.foot { padding-left: 12px; padding-right: 12px; }
   button { padding-left: 10px; padding-right: 10px; }
 }
+
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-bubble { fill: var(--brand-bubble); }
+.brand-eye { fill: var(--brand-eye); }

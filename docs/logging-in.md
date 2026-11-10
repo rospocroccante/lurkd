@@ -1,6 +1,6 @@
 # Logging in
 
-The lurkd page lists every source with its login state. The agent reads a source only with a session you created yourself.
+The lurkd page lists every source with its login state: "Logged in", "Session expired", "Switched off", "Not logged in" or "No login needed". The agent reads a source only with a session you created yourself.
 
 1. Run `lurkd start` if the page is not open.
 2. Press "Log in" next to the source. A browser window opens on the site's login page.
@@ -8,6 +8,8 @@ The lurkd page lists every source with its login state. The agent reads a source
 4. Press "Done" on the lurkd page. The window closes, lurkd checks the session with one request, and the row reads "Logged in".
 
 lurkd does not read or store what you type. It keeps only the cookies, in its own profile on disk.
+
+Sessions are kept in the profile on disk, so they are meant to survive `lurkd stop` and a restart. That has not yet been tried with a real account.
 
 ## Switching on a source
 
