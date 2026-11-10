@@ -295,6 +295,39 @@ describe('BrowserManager', () => {
     ]);
   });
 
+  it('takes the arm back through the function arm returns', async () => {
+    const f = fakeLauncher();
+    const m = manager(f);
+    await m.start();
+    const ctx = f.last();
+    const decisions: string[] = [];
+    const send = async (method: string, url: string) => {
+      await ctx.routeHandler!({
+        request: () => ({ method: () => method, url: () => url }),
+        continue: async () => void decisions.push(`allow ${method} ${url}`),
+        abort: async () => void decisions.push(`block ${method} ${url}`),
+      });
+    };
+    const withEndpoint = testSource({ id: 'alpha', base_url: 'https://f.example', read_endpoints: [{ method: 'POST', path: '/search/search', note: 'search' }] });
+    await m.withPage({ source: withEndpoint, jobId: 'j1' }, async (_page, arm) => {
+      // Armed, then disarmed before anything was sent: the POST is blocked.
+      const disarm = arm();
+      disarm();
+      await send('POST', 'https://f.example/search/search');
+      // Disarming after the guard has used the arm changes nothing, and does it twice safely.
+      const again = arm();
+      await send('POST', 'https://f.example/search/search');
+      again();
+      again();
+      await send('POST', 'https://f.example/search/search');
+    });
+    expect(decisions).toEqual([
+      'block POST https://f.example/search/search',
+      'allow POST https://f.example/search/search',
+      'block POST https://f.example/search/search',
+    ]);
+  });
+
   it('refuses a blob: or data: navigation of its page with off_domain and logs it', async () => {
     const f = fakeLauncher();
     const log: FetchLogEntry[] = [];
@@ -339,6 +372,27 @@ describe('BrowserManager', () => {
         return 'ok';
       }),
     ).resolves.toBe('ok');
+  });
+
+  it('names a redirect hop by origin only, and keeps the full URL in details', async () => {
+    const f = fakeLauncher();
+    const m = manager(f);
+    await m.start();
+    const hop = (url: string) => ({ method: () => 'GET', url: () => url, redirectedFrom: () => ({ url: () => 'https://f.example/go' }) });
+    const off = (await m.withPage(scope, async () => {
+      f.last().emit('request', hop('https://elsewhere.example/x?token=abc123#frag'));
+      return 'read';
+    }).catch((x: unknown) => x)) as Error & { details?: Record<string, unknown> };
+    expect(off).toMatchObject({ code: 'off_domain', details: { url: 'https://elsewhere.example/x?token=abc123#frag' } });
+    expect(off.message).toContain('redirected to another host,');
+    expect(off.message).not.toMatch(/elsewhere|\/x|token=abc123|frag/);
+    const denied = (await m.withPage(scope, async () => {
+      f.last().emit('request', hop('https://f.example/session/logout?csrf=abc123'));
+      return 'read';
+    }).catch((x: unknown) => x)) as Error & { details?: Record<string, unknown> };
+    expect(denied).toMatchObject({ code: 'denied_path', details: { url: 'https://f.example/session/logout?csrf=abc123' } });
+    expect(denied.message).toContain('to https://f.example (');
+    expect(denied.message).not.toMatch(/session\/logout|csrf=abc123/);
   });
 
   it('runs the handoff headed and goes back to headless', async () => {
@@ -589,6 +643,25 @@ describe('launch settings', () => {
     const m = manager(f);
     await m.start();
     expect(f.last().pages()).toEqual([]);
+  });
+
+  it('leaves SIGINT, SIGTERM and SIGHUP to the server process, headless and headed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurkd-launch-'));
+    try {
+      const seen: unknown[] = [];
+      const launch = createPlaywrightLaunch(async (_profileDir, options) => {
+        seen.push({ int: options.handleSIGINT, term: options.handleSIGTERM, hup: options.handleSIGHUP });
+        return new FakeContext(options.headless ?? true) as unknown as BrowserContext;
+      });
+      await launch(path.join(dir, 'p'), { headless: true });
+      await launch(path.join(dir, 'p'), { headless: false });
+      expect(seen).toEqual([
+        { int: false, term: false, hup: false },
+        { int: false, term: false, hup: false },
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('gives the lurkd feature switches to the headless launch only and rewrites the preference on both', async () => {

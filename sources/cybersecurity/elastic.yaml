@@ -1,0 +1,15 @@
+id: elastic
+name: "Elastic Discuss"
+description: "Elastic Stack and Elastic Security questions."
+status: untested
+topics: [cybersecurity, observability]
+engine: discourse
+base_url: https://discuss.elastic.co
+domains: [discuss.elastic.co]
+login_url: https://discuss.elastic.co/login
+automation:
+  policy: forbidden
+  rule_url: https://www.elastic.co/legal/terms-of-use
+  rule_quote: "You may not (nor permit any third party to) use the Site, or any part of the Site, to: \"deep-link\", \"page scrape\" or deploy to the Site any robot, spider, scraper, website search/retrieval application, or any other application or equivalent manual process designed to retrieve, index, \"data mine,\" information from the Site;"
+  checked_at: 2026-11-09
+enabled: false

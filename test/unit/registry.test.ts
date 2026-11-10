@@ -267,6 +267,7 @@ describe('Registry', () => {
 describe('canSearch', () => {
   const base = { base_url: 'https://forum.example.org' };
   const form = { search_form: 'form#s', search_input: 'input[name=q]' };
+  const list = { thread_list: 'ol.results a' };
   const endpoint = [{ method: 'POST' as const, path: '/search', note: 'search form' }];
 
   it('answers per engine', () => {
@@ -274,10 +275,20 @@ describe('canSearch', () => {
     expect(canSearch(testSource({ ...base, engine: 'xenforo' }))).toBe(false);
     expect(canSearch(testSource({ ...base, engine: 'xenforo', search_url: 'https://forum.example.org/search?q={query}' }))).toBe(true);
     expect(canSearch(testSource({ ...base, engine: 'generic' }))).toBe(false);
-    expect(canSearch(testSource({ ...base, engine: 'generic', search_url: 'https://forum.example.org/s?q={query}' }))).toBe(true);
-    expect(canSearch(testSource({ ...base, engine: 'phpbb', selectors: form }))).toBe(false);
-    expect(canSearch(testSource({ ...base, engine: 'phpbb', selectors: form, read_endpoints: endpoint }))).toBe(true);
-    expect(canSearch(testSource({ ...base, engine: 'generic', selectors: { search_form: 'form#s' }, read_endpoints: endpoint }))).toBe(false);
+    expect(canSearch(testSource({ ...base, engine: 'generic', search_url: 'https://forum.example.org/s?q={query}', selectors: list }))).toBe(true);
+    expect(canSearch(testSource({ ...base, engine: 'phpbb', selectors: { ...form, ...list } }))).toBe(false);
+    expect(canSearch(testSource({ ...base, engine: 'phpbb', selectors: { ...form, ...list }, read_endpoints: endpoint }))).toBe(true);
+    expect(canSearch(testSource({ ...base, engine: 'generic', selectors: { search_form: 'form#s', ...list }, read_endpoints: endpoint }))).toBe(false);
+  });
+
+  it('needs thread_list for every engine that reads its hits with selectors', () => {
+    const url = 'https://forum.example.org/s?q={query}';
+    expect(canSearch(testSource({ ...base, engine: 'generic', search_url: url }))).toBe(false);
+    expect(canSearch(testSource({ ...base, engine: 'custom', search_url: url, selectors: { post: 'article', author: '.a' } }))).toBe(false);
+    expect(canSearch(testSource({ ...base, engine: 'phpbb', selectors: form, read_endpoints: endpoint }))).toBe(false);
+    expect(canSearch(testSource({ ...base, engine: 'custom', search_url: url, selectors: { post: 'article', author: '.a', ...list } }))).toBe(true);
+    // XenForo and Discourse read their own result pages.
+    expect(canSearch(testSource({ ...base, engine: 'xenforo', search_url: 'https://forum.example.org/search?q={query}' }))).toBe(true);
   });
 
   it('lets XenForo search through a declared read endpoint without search_url', () => {

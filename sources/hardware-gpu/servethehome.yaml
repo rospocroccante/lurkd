@@ -1,0 +1,14 @@
+id: servethehome
+name: "ServeTheHome Forums"
+description: "Server, networking, storage and GPU hardware, including used enterprise gear."
+status: public_read
+topics: [hardware-gpu, homelab]
+engine: xenforo
+base_url: https://forums.servethehome.com
+domains: [forums.servethehome.com]
+login_url: https://forums.servethehome.com/index.php?login/
+automation:
+  policy: unknown
+  rule_url: https://forums.servethehome.com/index.php?help/terms/
+  rule_quote: null
+  checked_at: 2026-11-09

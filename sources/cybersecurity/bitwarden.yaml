@@ -1,0 +1,16 @@
+id: bitwarden
+name: "Bitwarden Community Forums"
+description: "Password manager use, self-hosting and security practice."
+status: public_read
+topics: [cybersecurity, password-managers]
+engine: discourse
+base_url: https://community.bitwarden.com
+domains: [community.bitwarden.com]
+login_url: https://community.bitwarden.com/login
+author_signals:
+  profile_lookup: false
+automation:
+  policy: unknown
+  rule_url: https://bitwarden.com/terms/
+  rule_quote: null
+  checked_at: 2026-11-09

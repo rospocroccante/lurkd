@@ -1,0 +1,14 @@
+id: openhab
+name: "openHAB Community"
+description: "Open source home automation: bindings, rules and setups."
+status: public_read
+topics: [home-automation, smart-home]
+engine: discourse
+base_url: https://community.openhab.org
+domains: [community.openhab.org]
+login_url: https://community.openhab.org/login
+automation:
+  policy: unknown
+  rule_url: https://community.openhab.org/guidelines
+  rule_quote: null
+  checked_at: 2026-11-09

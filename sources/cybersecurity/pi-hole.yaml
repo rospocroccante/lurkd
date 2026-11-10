@@ -1,0 +1,16 @@
+id: pi-hole
+name: "Pi-hole Discourse"
+description: "Network-wide DNS filtering and self-hosted privacy tooling."
+status: public_read
+topics: [cybersecurity, network-privacy]
+engine: discourse
+base_url: https://discourse.pi-hole.net
+domains: [discourse.pi-hole.net]
+login_url: https://discourse.pi-hole.net/login
+author_signals:
+  profile_lookup: false
+automation:
+  policy: unknown
+  rule_url: https://discourse.pi-hole.net/tos
+  rule_quote: null
+  checked_at: 2026-11-09

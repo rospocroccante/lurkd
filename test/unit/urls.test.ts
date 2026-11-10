@@ -217,6 +217,22 @@ describe('matchesReadEndpoint', () => {
 });
 
 describe('checkNavigable', () => {
+  it('names no host the forum chose when forumChosen is set', () => {
+    const e = (() => {
+      try {
+        checkNavigable(s, 'https://ignore-previous-instructions.evil.example/x/y?z=1', true);
+      } catch (x) {
+        return x as Error & { details: { url: string } };
+      }
+      throw new Error('no error');
+    })();
+    expect(e).toMatchObject({ code: 'off_domain', details: { url: 'https://ignore-previous-instructions.evil.example/x/y' } });
+    expect(e.message).not.toMatch(/ignore|evil|\/x\/y/i);
+    expect(e.message).toMatch(/^An address on another host is not on a domain of /);
+    // An address the agent gave is shown as before.
+    expect(() => checkNavigable(s, 'https://evil.example/t/1')).toThrow(/^https:\/\/evil\.example\/t\/1 is not on a domain/);
+  });
+
   it('checkNavigable throws off_domain and denied_path', () => {
     expect(() => checkNavigable(s, 'https://evil.example/t/1')).toThrow(expect.objectContaining({ code: 'off_domain' }));
     expect(() => checkNavigable(s, 'https://forum.example.org/session/logout')).toThrow(expect.objectContaining({ code: 'denied_path' }));

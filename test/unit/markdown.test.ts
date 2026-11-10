@@ -260,3 +260,35 @@ describe('escaping', () => {
     expect(out.match(/[\uE000\uE001]/gu)).toHaveLength(2);
   });
 });
+
+describe('unsafe content (Task 10 review)', () => {
+  it('drops the content of script, style, iframe, noscript and template', () => {
+    const out = md(
+      '<p>before</p><script>alert("x")</script><style>p { color: red }</style><iframe src="https://e.example/">frame text</iframe>' +
+        '<noscript>enable js</noscript><template><p>tpl</p></template><p>after</p>',
+    );
+    expect(out).toBe('before\n\nafter');
+  });
+
+  it('keeps one space where a removed element sat between two words, and none where there was none', () => {
+    expect(md('<p>a <noscript>x</noscript> b</p>')).toBe('a b');
+    expect(md('<p>a <style>x</style> <iframe src="https://e.example/"></iframe> b</p>')).toBe('a b');
+    expect(md('<p>a <style></style> b</p>')).toBe('a b');
+    expect(md('<p>a <script>x</script>b</p>')).toBe('a b');
+    expect(md('<p>a<script>x</script>b</p>')).toBe('ab');
+    expect(md('<p>a <NOSCRIPT >x</NOSCRIPT> b</p>')).toBe('a b');
+    expect(md('<p><script>x</script> lead</p><p>trail <template>t</template></p>')).toBe('lead\n\ntrail');
+  });
+
+  it('renders links to javascript:, data:, vbscript: and mailto: as plain text', () => {
+    expect(md('<p><a href="javascript:alert(1)">click</a> <a href="data:text/html,x">data</a> <a href="vbscript:x">vb</a> <a href="mailto:x@example.org">mail</a></p>')).toBe(
+      'click data vb mail',
+    );
+    expect(md('<p><a href="JaVaScRiPt:alert(1)">x</a></p>')).toBe('x');
+    expect(md(`<p><a href="/t/x/100">ok</a></p>`)).toBe(`[ok](https://${HOST}/t/x/100)`);
+  });
+
+  it('drops images whose source is not http(s)', () => {
+    expect(md('<p><img src="javascript:alert(1)" alt="a"><img src="/i.png" alt="b"></p>')).toBe(`![b](https://${HOST}/i.png)`);
+  });
+});

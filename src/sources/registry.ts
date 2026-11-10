@@ -31,18 +31,19 @@ export interface SourceView {
 
 /**
  * Whether lurkd can search this source (P15, D6). The Registry reports it as `searchSupported`,
- * and the engine adapters' `search` must answer `search_unsupported` exactly when it is false:
- * when the adapters land they own this rule and the Registry calls theirs.
- * Discourse searches with GET; XenForo through `search_url` or a declared POST read endpoint
- * (D14, Task 11); every other engine through `search_url` or the D14 form (`search_form`,
- * `search_input` and a read endpoint).
+ * and the engine adapters' `search` answers `search_unsupported` exactly when it is false; their
+ * `canSearch` holds the same rule. Discourse searches with GET; XenForo through `search_url` or a
+ * declared POST read endpoint (D14, Task 11). Every other engine reads its hits through
+ * `selectors.thread_list` (Task 12), so it needs `thread_list` together with `search_url`, or with
+ * the D14 form (`search_form`, `search_input` and a read endpoint).
  */
 export function canSearch(source: SourceConfig): boolean {
-  if (source.search_url !== null) return true;
   if (source.engine === 'discourse') return true;
-  if (source.engine === 'xenforo') return source.read_endpoints.length > 0;
+  if (source.engine === 'xenforo') return source.search_url !== null || source.read_endpoints.length > 0;
   const sel = source.selectors;
-  return sel?.search_form !== undefined && sel.search_input !== undefined && source.read_endpoints.length > 0;
+  if (sel?.thread_list === undefined) return false;
+  if (source.search_url !== null) return true;
+  return sel.search_form !== undefined && sel.search_input !== undefined && source.read_endpoints.length > 0;
 }
 
 interface Entry {

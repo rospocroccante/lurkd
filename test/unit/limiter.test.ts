@@ -119,6 +119,24 @@ describe('RunLimiter', () => {
     expect(sleeps).toEqual([2000, 4000]);
   });
 
+  it('refuses the next request once the job signal aborts, also after a host wait', async () => {
+    const controller = new AbortController();
+    const clock = new FakeClock();
+    const rl = new RunLimiter(limits(), new HostPacer(), () => 0, clock, controller.signal);
+    await rl.acquire('a.example');
+    // The signal aborts while the second request waits for its host slot.
+    const sleep = clock.sleep.bind(clock);
+    clock.sleep = async (ms: number) => {
+      controller.abort();
+      await sleep(ms);
+    };
+    const during = await rejection(rl.acquire('a.example'));
+    expect(during).toMatchObject({ code: 'server_unavailable', message: 'lurkd is shutting down.' });
+    expect(rl.used).toBe(1);
+    expect(await rejection(rl.acquire('b.example'))).toMatchObject({ code: 'server_unavailable' });
+    expect(rl.used).toBe(1);
+  });
+
   it('stops at the per-run cap', async () => {
     const rl = new RunLimiter(limits({ minIntervalMs: 0 }), new HostPacer(), () => 0, new FakeClock());
     for (const i of range(1, 60)) await rl.acquire(`h${i}.example`);

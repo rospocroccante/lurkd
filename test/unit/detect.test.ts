@@ -19,7 +19,7 @@ describe('detectBlock on saved pages', () => {
       html,
     });
     expect(d?.kind).toBe('login');
-    expect(d?.reasons).toEqual(['login-like path /login-preferences']);
+    expect(d?.reasons).toEqual(['login-like path']);
   });
 
   it('fires on HTTP 403 for private messages of another user', () => {
@@ -174,7 +174,7 @@ describe('hasPasswordInput on hostile markup', () => {
 describe('detectBlock login path (P23)', () => {
   it('fires on a redirect from a thread to a login path', () => {
     const d = detectBlock({ url: 'https://forum.example.org/login?return=%2Ft%2Fx%2F1', requestedUrl: 'https://forum.example.org/t/x/1', status: 200, html: '' });
-    expect(d).toEqual({ kind: 'login', reasons: ['login-like path /login'] });
+    expect(d).toEqual({ kind: 'login', reasons: ['login-like path'] });
   });
 
   it('does not flag a login path that was requested on purpose', () => {
@@ -187,7 +187,7 @@ describe('detectBlock login path (P23)', () => {
   it('fires on a redirect between login paths (P23, literal reading)', () => {
     expect(detectBlock({ url: 'https://forum.example.org/session/sso', requestedUrl: 'https://forum.example.org/login', status: 200, html: '' })).toEqual({
       kind: 'login',
-      reasons: ['login-like path /session/sso'],
+      reasons: ['login-like path'],
     });
     expect(detectBlock({ url: 'https://forum.example.org/login?return=%2F', requestedUrl: 'https://forum.example.org/login', status: 200, html: '' })?.kind).toBe(
       'login',
@@ -218,7 +218,7 @@ describe('detectBlock login path on thread paths', () => {
     expect(at('https://forum.example.org/t/login-problems/123', 'https://forum.example.org/t/123', discourse)).toBeNull());
 
   it('still fires on a Discourse redirect to /login', () =>
-    expect(at('https://forum.example.org/login', 'https://forum.example.org/t/123', discourse)).toEqual({ kind: 'login', reasons: ['login-like path /login'] }));
+    expect(at('https://forum.example.org/login', 'https://forum.example.org/t/123', discourse)).toEqual({ kind: 'login', reasons: ['login-like path'] }));
 
   it('ignores a XenForo thread whose slug starts with "login"', () => {
     expect(at('https://forum.example.org/threads/login-help.42/', 'https://forum.example.org/threads/42/', xenforo)).toBeNull();

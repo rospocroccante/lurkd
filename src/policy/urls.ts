@@ -175,6 +175,11 @@ function threadRoute(source: SourceConfig, u: URL): 'path' | 'query' | null {
   return null;
 }
 
+/** True when lurkd knows the thread paths of this engine, so `isThreadPath` can tell a thread from any other page. */
+export function hasThreadPattern(engine: Engine): boolean {
+  return THREAD_PATHS[engine] !== undefined;
+}
+
 /** True when `url` is on the source's hosts and is a thread path of its engine. */
 export function isThreadPath(source: SourceConfig, url: string): boolean {
   const u = parseAbsolute(url);
@@ -264,7 +269,7 @@ export function isAllowedHost(source: SourceConfig, url: string): boolean {
  */
 export function deniedBy(source: SourceConfig, url: string): string | null {
   const u = parseAbsolute(url);
-  if (!u) throw new LurkdError('invalid_request', `Not an absolute URL: ${url}`, { url });
+  if (!u) throw new LurkdError('invalid_request', 'Not an absolute URL.');
   const all = segmentsOf([u.pathname + u.search]);
   for (const rule of source.deny_paths) {
     if (rule.startsWith('/') ? denyGlobMatches(rule, u) : all.some(wordMatcher(rule))) return rule;
@@ -286,18 +291,62 @@ export function matchesReadEndpoint(source: SourceConfig, method: string, url: s
   return hit && deniedBy(source, url) === null;
 }
 
-/** Throws `off_domain` or `denied_path` unless the browser may open `url` for this source. */
-export function checkNavigable(source: SourceConfig, url: string): void {
+/**
+ * `url` as an error may show it: origin and path only, so a user name, password, query or fragment
+ * the caller put in never comes back in a message or in `details`. A string that is not an http(s)
+ * URL is not shown at all.
+ */
+export function redactUrl(url: string): string {
+  const u = parseAbsolute(url);
+  if (!u) return 'that address';
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return `a ${u.protocol} address`;
+  return `${u.origin}${u.pathname}`;
+}
+
+/**
+ * `url` as a message may show an address the forum chose (a redirect target, a form action, the
+ * page's own address after it moved): the origin only, so no path or query text of the forum
+ * reaches a line lurkd prints. The full address belongs in `details`.
+ */
+export function redactOrigin(url: string): string {
+  const u = parseAbsolute(url);
+  if (!u) return 'that address';
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return `a ${u.protocol} address`;
+  return u.origin;
+}
+
+/**
+ * An address the forum chose, for a message: the origin when its host is one of the source's own
+ * (the forum can only pick a path there), "another host" otherwise, since a host name is text the
+ * forum picked. The full address belongs in `details`.
+ */
+export function redactForumAddress(source: SourceConfig, url: string): string {
+  const origin = redactOrigin(url);
+  return origin.startsWith('http') && !isAllowedHost(source, url) ? 'another host' : origin;
+}
+
+/**
+ * Throws `off_domain` or `denied_path` unless the browser may open `url` for this source, and
+ * `invalid_request` for a URL that carries a user name or password (the browser would send them).
+ * Errors name the URL through `redactUrl`, or through `redactOrigin` when `forumChosen` says the
+ * forum picked the address (a form action, a request the page made): `details.url` keeps the path.
+ */
+export function checkNavigable(source: SourceConfig, url: string, forumChosen = false): void {
+  const full = redactUrl(url);
+  const shown = forumChosen ? redactForumAddress(source, url) : full;
   if (!isAllowedHost(source, url)) {
-    throw new LurkdError('off_domain', `${url} is not on a domain of ${source.id} (${source.domains.join(', ')}).`, {
-      url,
+    throw new LurkdError('off_domain', `${forumChosen ? 'An address on another host' : shown} is not on a domain of ${source.id} (${source.domains.join(', ')}).`, {
+      url: full,
       sourceId: source.id,
       domains: source.domains,
     });
   }
+  const u = parseAbsolute(url)!;
+  if (u.username !== '' || u.password !== '')
+    throw new LurkdError('invalid_request', `lurkd does not open URLs that carry a user name or password (${shown}).`, { url: full, sourceId: source.id });
   const rule = deniedBy(source, url);
   if (rule !== null) {
     const which = source.deny_paths.includes(rule) ? `the deny rule "${rule}" of ${source.id}` : `the built-in deny rule "${rule}"`;
-    throw new LurkdError('denied_path', `${url} matches ${which}, so lurkd will not open it.`, { url, sourceId: source.id, rule });
+    throw new LurkdError('denied_path', `${shown} matches ${which}, so lurkd will not open it.`, { url: full, sourceId: source.id, rule });
   }
 }

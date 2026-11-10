@@ -1,0 +1,12 @@
+{
+  "name": "lurkd",
+  "version": "0.1.0",
+  "description": "Read login-gated forums and marketplaces through your own browser session, read-only, as threaded Markdown with pseudonymised authors.",
+  "mcpServers": {
+    "lurkd": {
+      "command": "lurkd",
+      "args": ["mcp"]
+    }
+  },
+  "contextFileName": "skills/lurkd/SKILL.md"
+}

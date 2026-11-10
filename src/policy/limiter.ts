@@ -57,6 +57,7 @@ export function limitsFor(source: SourceConfig): RunLimits {
 }
 
 const timeout = () => new LurkdError('timeout', 'Run stopped after 10 minutes.');
+const shuttingDown = () => new LurkdError('server_unavailable', 'lurkd is shutting down.');
 
 /**
  * The limits of one run: the per-run cap, the daily cap on top of `usedToday` (read once, at
@@ -74,6 +75,8 @@ export class RunLimiter {
     private readonly pacer: HostPacer,
     usedToday: () => number,
     private readonly clock: Clock = realClock,
+    /** The job's abort signal (FetchQueue.close): once aborted, the next acquire refuses. */
+    private readonly signal?: AbortSignal,
   ) {
     this.startedAt = clock.now();
     this.usedBefore = usedToday();
@@ -93,6 +96,7 @@ export class RunLimiter {
 
   async acquire(host: string): Promise<void> {
     const { maxRequestsPerRun, maxRequestsPerDay, minIntervalMs } = this.limits;
+    if (this.signal?.aborted) throw shuttingDown();
     if (this.count >= maxRequestsPerRun)
       throw new LurkdError('run_cap', `Request cap reached: ${maxRequestsPerRun} requests in this run.`);
     if (this.usedBefore + this.count >= maxRequestsPerDay)
@@ -111,6 +115,10 @@ export class RunLimiter {
       if (this.remainingMs() <= 0) {
         this.count--;
         throw timeout();
+      }
+      if (this.signal?.aborted) {
+        this.count--;
+        throw shuttingDown();
       }
     }
   }

@@ -4,6 +4,7 @@ import { chromium, type BrowserContext, type Dialog, type Frame, type Page } fro
 import type { FetchLogEntry } from '../archive/state.js';
 import { LurkdError } from '../errors.js';
 import { PAGE_TIMEOUT_MS } from '../policy/limiter.js';
+import { redactForumAddress } from '../policy/urls.js';
 import type { SourceConfig } from '../sources/schema.js';
 import { installGuard, type GuardScope, type RedirectViolation } from './guard.js';
 
@@ -41,6 +42,12 @@ export function createPlaywrightLaunch(launchPersistent: PersistentLauncher = (d
       viewport: null,
       serviceWorkers: 'block',
       acceptDownloads: false,
+      // The server process owns its signals: Playwright's own handlers would close the browser
+      // and exit (130 on SIGINT) while the server is still shutting down. Chromium still dies
+      // with a killed parent, because its debugging pipe closes.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
     };
     if (headless) options.args = [`--enable-features=${ENABLED_FEATURES.join(',')}`, `--disable-features=${DISABLED_FEATURES.join(',')}`];
     return launchPersistent(profileDir, options);
@@ -113,6 +120,9 @@ export function disablePreloading(profileDir: string): void {
   fs.writeFileSync(tmp, JSON.stringify(prefs), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
+
+/** Arms the guard for one read-endpoint POST (D14) and returns the function that disarms it again. */
+export type ArmFn = () => () => void;
 
 export type BrowserState = 'down' | 'starting' | 'ready' | 'handoff' | 'error';
 
@@ -212,11 +222,12 @@ export class BrowserManager {
 
   /**
    * Runs `fn` on a fresh guarded page for `scope.source`, then closes the page. Calls run one at a
-   * time. `arm()` lets one POST to a read endpoint of the source through (D14), until the call ends.
+   * time. `arm()` lets one POST to a read endpoint of the source through (D14), until the call ends;
+   * the function it returns takes the permission back earlier, for a submit that never left.
    * Refuses with `handoff_in_progress` during a handoff; relaunches the browser once when it has
    * closed, and throws `browser_unavailable` when that fails (P1).
    */
-  async withPage<T>(scope: { source: SourceConfig; jobId: string | null }, fn: (page: Page, arm: () => void) => Promise<T>): Promise<T> {
+  async withPage<T>(scope: { source: SourceConfig; jobId: string | null }, fn: (page: Page, arm: ArmFn) => Promise<T>): Promise<T> {
     this.refuseDuringHandoff();
     this.busy++;
     try {
@@ -370,18 +381,20 @@ export class BrowserManager {
     const source = v.scope.source;
     if (!source || this.failures.has(v.scope)) return;
     const url = v.url.slice(0, LOGGED_URL_MAX);
+    // The redirect target is the forum's choice: the message shows its origin, details the full address.
+    const shown = redactForumAddress(source, url);
     const offDomain = ['off_domain', 'no_source', 'invalid_url'].includes(v.note) || v.note.startsWith('scheme:');
     const sent = `The request had already left the browser, so lurkd stopped the read.`;
     this.failures.set(
       v.scope,
       offDomain
-        ? new LurkdError('off_domain', `${source.name} redirected to ${url}, which is not on a domain of ${source.id}. ${sent}`, {
+        ? new LurkdError('off_domain', `${source.name} redirected to ${shown}, which is not on a domain of ${source.id}. ${sent}`, {
             url,
             sourceId: source.id,
             domains: source.domains,
             redirect: true,
           })
-        : new LurkdError('denied_path', `${source.name} redirected a ${v.method} request to ${url} (${v.note}), which lurkd never sends. ${sent}`, {
+        : new LurkdError('denied_path', `${source.name} redirected a ${v.method} request to ${shown} (${v.note}), which lurkd never sends. ${sent}`, {
             url,
             sourceId: source.id,
             rule: v.note.startsWith('deny:') ? v.note.slice('deny:'.length) : null,
@@ -444,12 +457,15 @@ export class BrowserManager {
     throw new LurkdError('browser_unavailable', `The browser could not open a page: ${this._lastError}`);
   }
 
-  private async runPage<T>(scope: { source: SourceConfig; jobId: string | null }, fn: (page: Page, arm: () => void) => Promise<T>): Promise<T> {
+  private async runPage<T>(scope: { source: SourceConfig; jobId: string | null }, fn: (page: Page, arm: ArmFn) => Promise<T>): Promise<T> {
     const { page } = await this.freshPage();
     const own: GuardScope = { source: scope.source, jobId: scope.jobId, armed: false };
     this.scope = own;
-    const arm = () => {
+    const arm: ArmFn = () => {
       if (this.scope === own) own.armed = true;
+      return () => {
+        own.armed = false;
+      };
     };
 
     let refusedUrl: string | null = null;

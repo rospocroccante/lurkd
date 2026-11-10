@@ -1,0 +1,14 @@
+id: hwupgrade
+name: "HWUpgrade Forum"
+description: "Italian forum on PC hardware, GPUs and components."
+status: untested
+topics: [hardware-gpu, italian]
+engine: vbulletin
+base_url: https://www.hwupgrade.it
+domains: [www.hwupgrade.it]
+login_url: https://www.hwupgrade.it/forum/login.php?do=login
+automation:
+  policy: unknown
+  rule_url: https://www.hwupgrade.it/forum/regolamento.php
+  rule_quote: null
+  checked_at: 2026-11-09

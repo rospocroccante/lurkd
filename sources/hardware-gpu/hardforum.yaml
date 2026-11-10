@@ -1,0 +1,14 @@
+id: hardforum
+name: "HardForum"
+description: "PC hardware, video cards, cooling and overclocking."
+status: public_read
+topics: [hardware-gpu, pc-building]
+engine: xenforo
+base_url: https://hardforum.com
+domains: [hardforum.com]
+login_url: https://hardforum.com/login/
+automation:
+  policy: unknown
+  rule_url: https://hardforum.com/help/terms/
+  rule_quote: null
+  checked_at: 2026-11-09

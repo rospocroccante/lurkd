@@ -7,6 +7,7 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowJs": true,
     "types": ["node"]
   },
   "include": ["src", "test", "scripts", "vitest.config.ts"]

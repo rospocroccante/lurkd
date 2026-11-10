@@ -1,0 +1,14 @@
+id: rclone
+name: "Rclone Forum"
+description: "Command-line cloud storage sync and mounts."
+status: untested
+topics: [tools, sync]
+engine: discourse
+base_url: https://forum.rclone.org
+domains: [forum.rclone.org]
+login_url: https://forum.rclone.org/login
+automation:
+  policy: unknown
+  rule_url: https://forum.rclone.org/tos
+  rule_quote: null
+  checked_at: 2026-11-09

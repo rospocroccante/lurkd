@@ -1,0 +1,16 @@
+id: openwrt
+name: "OpenWrt Forum"
+description: "Router firmware, network hardware and wireless setups."
+status: public_read
+topics: [hardware-gpu, networking]
+engine: discourse
+base_url: https://forum.openwrt.org
+domains: [forum.openwrt.org]
+login_url: https://forum.openwrt.org/login
+author_signals:
+  profile_lookup: false
+automation:
+  policy: unknown
+  rule_url: https://forum.openwrt.org/tos
+  rule_quote: null
+  checked_at: 2026-11-09

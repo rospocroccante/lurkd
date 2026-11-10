@@ -1,0 +1,15 @@
+id: privacyguides
+name: "Privacy Guides Community"
+description: "Privacy and security tools, threat modelling and hardening."
+status: untested
+topics: [cybersecurity, privacy]
+engine: discourse
+base_url: https://discuss.privacyguides.net
+domains: [discuss.privacyguides.net]
+login_url: https://discuss.privacyguides.net/login
+automation:
+  policy: forbidden
+  rule_url: https://discuss.privacyguides.net/tos
+  rule_quote: "You may not automate access to the forum, or monitor the forum, such as with a web crawler, browser plug-in or add-on, or other computer program that is not a web browser."
+  checked_at: 2026-11-09
+enabled: false

@@ -81,6 +81,9 @@ export function fenceFor(code: string): string {
   return '`'.repeat(Math.max(3, longest + 1));
 }
 
+// Elements whose content is never post text.
+const NON_TEXT: ReadonlySet<string> = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'NOSCRIPT', 'TEMPLATE']);
+
 export function makeConverter(ctx: ConvertContext): (html: string) => string {
   const td = new TurndownService({
     headingStyle: 'atx',
@@ -98,6 +101,16 @@ export function makeConverter(ctx: ConvertContext): (html: string) => string {
   const nonce = crypto.randomBytes(12).toString('hex');
   const open = `lurkd${nonce}o`;
   const close = `lurkd${nonce}c`;
+  const gap = `lurkd${nonce}g`;
+  const noscriptTag = `lurkd-noscript-${nonce}`;
+  const gapRun = new RegExp(`[ \\t]*${gap}(?:[ \\t]*${gap})*[ \\t]*`, 'g');
+  const closeGaps = (md: string): string =>
+    md.replace(gapRun, (run: string, at: number) => {
+      const before = md[at - 1];
+      const after = md[at + run.length];
+      const edge = before === undefined || before === '\n' || after === undefined || after === '\n';
+      return !edge && /[ \t]/.test(run) ? ' ' : '';
+    });
   const mark = (name: string): string => markName(name).replace(NAME_OPEN, open).replace(NAME_CLOSE, close);
 
   const base = (() => {
@@ -165,7 +178,28 @@ export function makeConverter(ctx: ConvertContext): (html: string) => string {
     }
   };
 
+  // Only http(s) targets become links or images; javascript:, data:, vbscript:, mailto: and
+  // anything that does not parse stay plain text.
+  const isWeb = (url: string): boolean => {
+    try {
+      const p = new URL(url).protocol;
+      return p === 'http:' || p === 'https:';
+    } catch {
+      return false;
+    }
+  };
+
   // Turndown gives priority to rules added later, so generic rules come first.
+
+  // Never post text: scripts, styles, embedded frames, noscript fallbacks and templates. Each
+  // becomes a gap token, and the final pass turns a run of gaps into one space when whitespace
+  // stood next to it between two words, so `a <noscript>x</noscript> b` gives "a b". Turndown
+  // treats noscript as a block and trims the spaces around it, so the input names it `noscriptTag`
+  // instead, which Turndown handles as an inline element.
+  const isNonText = (node: Node): boolean => NON_TEXT.has(node.nodeName) || node.nodeName === noscriptTag.toUpperCase();
+  td.addRule('nonText', { filter: (node) => isNonText(node), replacement: () => gap });
+  const blank = td.options.blankReplacement!;
+  td.options.blankReplacement = (content, node, options) => (isNonText(node as Node) ? gap : blank(content, node, options));
 
   td.addRule('br', {
     filter: 'br',
@@ -185,6 +219,7 @@ export function makeConverter(ctx: ConvertContext): (html: string) => string {
       if (USER_AVATAR.test(plain)) text = '';
       else if (plain === rawHref || plain === abs(rawHref)) text = href;
       if (USER_AVATAR.test(rawHref) || !text) return text;
+      if (!isWeb(href)) return text;
       // Discourse titles internal post links "Topic - #12 by username".
       text = text.replace(/ - #(\d+) by ((?:\\.|[\w.\-])+)$/, (_m, n: string, user: string) => ` - #${n} by ${mark(user.replace(/\\(.)/g, '$1'))}`);
       if (text === href) return `<${href}>`;
@@ -197,7 +232,7 @@ export function makeConverter(ctx: ConvertContext): (html: string) => string {
     replacement: (_c, node) => {
       const el = node as El;
       const src = el.getAttribute('data-src') || el.getAttribute('data-url') || el.getAttribute('src');
-      if (!src || src.startsWith('data:') || USER_AVATAR.test(src)) return '';
+      if (!src || src.startsWith('data:') || USER_AVATAR.test(src) || !isWeb(abs(src))) return '';
       const alt = (el.getAttribute('alt') ?? '').replace(/[[\]\n]/g, ' ').trim();
       return `![${alt}](${abs(src)})`;
     },
@@ -367,7 +402,7 @@ export function makeConverter(ctx: ConvertContext): (html: string) => string {
   td.remove((node) => hasClass(node, 'bbCodeBlock-title') && hasClass(node.parentNode, 'bbCodeBlock--code'));
 
   return (html: string) =>
-    stripMarkers(td.turndown(stripMarkers(html)).replace(/\n{3,}/g, '\n\n').trim())
+    stripMarkers(closeGaps(td.turndown(stripMarkers(html).replace(/<(\/?)noscript(?=[\s/>])/gi, `<$1${noscriptTag}`))).replace(/\n{3,}/g, '\n\n').trim())
       .split(open)
       .join(NAME_OPEN)
       .split(close)

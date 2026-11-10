@@ -1,0 +1,14 @@
+id: jeedom
+name: "Jeedom Community"
+description: "French-language home automation platform support."
+status: untested
+topics: [home-automation, french]
+engine: discourse
+base_url: https://community.jeedom.com
+domains: [community.jeedom.com]
+login_url: https://community.jeedom.com/login
+automation:
+  policy: unknown
+  rule_url: https://community.jeedom.com/tos
+  rule_quote: null
+  checked_at: 2026-11-09

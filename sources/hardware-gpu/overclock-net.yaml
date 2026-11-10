@@ -1,0 +1,15 @@
+id: overclock-net
+name: "Overclock.net"
+description: "PC overclocking, cooling and GPU hardware."
+status: untested
+topics: [hardware-gpu, pc-building]
+engine: xenforo
+base_url: https://www.overclock.net
+domains: [www.overclock.net]
+login_url: https://www.overclock.net/login/
+automation:
+  policy: forbidden
+  rule_url: https://www.overclock.net/help/terms/
+  rule_quote: "Access, search, or collect data from the Web Site by any means (automated or otherwise, including web scraping or any access in violation of our robots.txt file), or by use of any automated tools, services or technologies (including artificial intelligence, machine learning systems or large language models) to scrape, collect, train on, or otherwise process Content, except as permitted in these Terms or through a separate, written agreement with us."
+  checked_at: 2026-11-09
+enabled: false

@@ -1,0 +1,15 @@
+id: qubes-os
+name: "Qubes OS Forum"
+description: "Security-focused operating system, compartmentalisation and hardware compatibility."
+status: untested
+topics: [cybersecurity, operating-systems]
+engine: discourse
+base_url: https://forum.qubes-os.org
+domains: [forum.qubes-os.org]
+login_url: https://forum.qubes-os.org/login
+automation:
+  policy: forbidden
+  rule_url: https://forum.qubes-os.org/tos
+  rule_quote: "You may not automate access to the forum, or monitor the forum, such as with a web crawler, browser plug-in or add-on, or other computer program that is not a web browser."
+  checked_at: 2026-11-09
+enabled: false

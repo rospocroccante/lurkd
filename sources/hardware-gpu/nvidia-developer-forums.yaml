@@ -1,0 +1,15 @@
+id: nvidia-developer-forums
+name: "NVIDIA Developer Forums"
+description: "GPU drivers, CUDA and developer hardware questions."
+status: untested
+topics: [hardware-gpu, gpu-computing]
+engine: discourse
+base_url: https://forums.developer.nvidia.com
+domains: [forums.developer.nvidia.com]
+login_url: https://forums.developer.nvidia.com/login
+automation:
+  policy: forbidden
+  rule_url: https://www.nvidia.com/en-eu/about-nvidia/terms-of-service/
+  rule_quote: "use any robot, spider, scraper, crawler, data mining tool, data gathering or extraction tool, or any other automatic device, program, algorithm or methodology, or any similar or equivalent manual process, to access, acquire, copy or monitor any portion of the Site, or in any way reproduce or circumvent the navigational structure or presentation of the Site, to obtain or attempt to obtain any materials, documents or information through any means not purposely made available through the Site;"
+  checked_at: 2026-11-09
+enabled: false

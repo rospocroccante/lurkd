@@ -1,0 +1,14 @@
+id: letsencrypt
+name: "Let’s Encrypt Community"
+description: "Certificates, ACME clients and TLS setup help."
+status: public_read
+topics: [cybersecurity, tls]
+engine: discourse
+base_url: https://community.letsencrypt.org
+domains: [community.letsencrypt.org]
+login_url: https://community.letsencrypt.org/login
+automation:
+  policy: unknown
+  rule_url: https://community.letsencrypt.org/tos
+  rule_quote: null
+  checked_at: 2026-11-09

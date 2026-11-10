@@ -1,0 +1,15 @@
+id: obsidian
+name: "Obsidian Forum"
+description: "Notes app, plugins, sync and workflows."
+status: untested
+topics: [tools, notes]
+engine: discourse
+base_url: https://forum.obsidian.md
+domains: [forum.obsidian.md]
+login_url: https://forum.obsidian.md/login
+automation:
+  policy: forbidden
+  rule_url: https://obsidian.md/terms
+  rule_quote: "You may not gather, extract, reproduce and/or display on any other non-Company website or other online service, any material on or from obsidian.md or the Services, whether or not by the use of spiders or other ‘screen scraping’ software or system used to extract data without the express consent of the Company."
+  checked_at: 2026-11-09
+enabled: false

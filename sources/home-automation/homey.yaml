@@ -1,0 +1,14 @@
+id: homey
+name: "Homey Community"
+description: "Smart home hub, apps and flows."
+status: untested
+topics: [home-automation, smart-home]
+engine: discourse
+base_url: https://community.homey.app
+domains: [community.homey.app]
+login_url: https://community.homey.app/login
+automation:
+  policy: unknown
+  rule_url: https://legal.athom.com/?document=terms-and-conditions
+  rule_quote: null
+  checked_at: 2026-11-09

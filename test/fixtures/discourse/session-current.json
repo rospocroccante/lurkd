@@ -1,0 +1,9 @@
+{
+  "current_user": {
+    "id": 1,
+    "username": "alice",
+    "name": null,
+    "trust_level": 4,
+    "admin": true
+  }
+}

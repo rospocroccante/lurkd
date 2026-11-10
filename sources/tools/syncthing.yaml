@@ -1,0 +1,14 @@
+id: syncthing
+name: "Syncthing Forum"
+description: "Continuous file synchronisation between devices."
+status: untested
+topics: [tools, sync]
+engine: discourse
+base_url: https://forum.syncthing.net
+domains: [forum.syncthing.net]
+login_url: https://forum.syncthing.net/login
+automation:
+  policy: unknown
+  rule_url: https://forum.syncthing.net/tos
+  rule_quote: null
+  checked_at: 2026-11-09

@@ -1,0 +1,15 @@
+id: smartthings
+name: "SmartThings Community"
+description: "Smart home devices, automations and the SmartThings platform."
+status: untested
+topics: [home-automation, smart-home]
+engine: discourse
+base_url: https://community.smartthings.com
+domains: [community.smartthings.com]
+login_url: https://community.smartthings.com/login
+automation:
+  policy: forbidden
+  rule_url: https://community.smartthings.com/tos
+  rule_quote: "You may not automate access to the forum, or monitor the forum, such as with a web crawler, browser plug-in or add-on, or other computer program that is not a web browser."
+  checked_at: 2026-11-09
+enabled: false

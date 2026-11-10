@@ -1,0 +1,14 @@
+id: home-assistant
+name: "Home Assistant Community"
+description: "Open source home automation: integrations, YAML, dashboards and hardware."
+status: public_read
+topics: [home-automation, smart-home]
+engine: discourse
+base_url: https://community.home-assistant.io
+domains: [community.home-assistant.io]
+login_url: https://community.home-assistant.io/login
+automation:
+  policy: unknown
+  rule_url: https://www.home-assistant.io/tos/
+  rule_quote: null
+  checked_at: 2026-11-09

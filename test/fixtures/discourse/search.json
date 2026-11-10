@@ -1,0 +1,72 @@
+{
+  "posts": [
+    {
+      "id": 2000,
+      "username": "alice",
+      "blurb": "synthetic blurb 1",
+      "post_number": 1,
+      "topic_id": 102
+    },
+    {
+      "id": 2001,
+      "username": "bob",
+      "blurb": "synthetic blurb 2",
+      "post_number": 1,
+      "topic_id": 100
+    },
+    {
+      "id": 2002,
+      "username": "carol",
+      "blurb": "synthetic blurb 3",
+      "post_number": 1,
+      "topic_id": 102
+    },
+    {
+      "id": 2003,
+      "username": "dave",
+      "blurb": "synthetic blurb 4",
+      "post_number": 1,
+      "topic_id": 101
+    }
+  ],
+  "topics": [
+    {
+      "id": 100,
+      "slug": "test-topic",
+      "title": "Board resets after the update (synthetic fixture)",
+      "fancy_title": "Board resets after the update (synthetic fixture)",
+      "posts_count": 45
+    },
+    {
+      "id": 101,
+      "slug": "topic-101",
+      "title": "Second synthetic topic",
+      "fancy_title": "Second synthetic topic",
+      "posts_count": 6
+    },
+    {
+      "id": 102,
+      "slug": "topic-102",
+      "title": "Third synthetic topic",
+      "fancy_title": "Third synthetic topic",
+      "posts_count": 7
+    },
+    {
+      "id": 103,
+      "slug": "topic-103",
+      "title": "Fourth synthetic topic",
+      "fancy_title": "Fourth synthetic topic",
+      "posts_count": 8
+    }
+  ],
+  "users": [],
+  "grouped_search_result": {
+    "term": "reset",
+    "post_ids": [
+      2000,
+      2001,
+      2002,
+      2003
+    ]
+  }
+}

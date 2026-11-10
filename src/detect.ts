@@ -142,7 +142,7 @@ export function detectBlock(signals: PageSignals): Detection | null {
   const pathname = pathnameOf(signals.url);
   const redirected = signals.requestedUrl === undefined || normalized(signals.requestedUrl) !== normalized(signals.url);
   const thread = signals.source !== undefined && isThreadPath(signals.source, signals.url);
-  if (redirected && !thread && LOGIN_PATH.test(pathname)) reasons.push(`login-like path ${pathname}`);
+  if (redirected && !thread && LOGIN_PATH.test(pathname)) reasons.push('login-like path');
 
   const password =
     signals.visiblePasswordInputs !== undefined ? signals.visiblePasswordInputs > 0 : hasPasswordInput(signals.html);

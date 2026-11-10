@@ -1,0 +1,16 @@
+id: level1techs
+name: "Level1Techs Forums"
+description: "Hardware, Linux, homelab and GPU passthrough discussion."
+status: public_read
+topics: [hardware-gpu, homelab]
+engine: discourse
+base_url: https://forum.level1techs.com
+domains: [forum.level1techs.com]
+login_url: https://forum.level1techs.com/login
+author_signals:
+  profile_lookup: false
+automation:
+  policy: unknown
+  rule_url: https://forum.level1techs.com/tos
+  rule_quote: null
+  checked_at: 2026-11-09

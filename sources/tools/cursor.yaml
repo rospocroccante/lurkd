@@ -1,0 +1,15 @@
+id: cursor
+name: "Cursor Community Forum"
+description: "AI code editor questions and feedback."
+status: untested
+topics: [tools, coding]
+engine: discourse
+base_url: https://forum.cursor.com
+domains: [forum.cursor.com]
+login_url: https://forum.cursor.com/login
+automation:
+  policy: forbidden
+  rule_url: https://forum.cursor.com/tos
+  rule_quote: "You may not automate access to the forum, or monitor the forum, such as with a web crawler, browser plug-in or add-on, or other computer program that is not a web browser."
+  checked_at: 2026-11-09
+enabled: false

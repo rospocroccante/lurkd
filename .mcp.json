@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lurkd": {
+      "command": "lurkd",
+      "args": ["mcp"]
+    }
+  }
+}

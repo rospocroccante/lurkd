@@ -1,0 +1,14 @@
+id: beyond3d
+name: "Beyond3D Forum"
+description: "3D graphics hardware and GPU architecture discussion."
+status: untested
+topics: [hardware-gpu, graphics]
+engine: xenforo
+base_url: https://forum.beyond3d.com
+domains: [forum.beyond3d.com]
+login_url: https://forum.beyond3d.com/login/
+automation:
+  policy: unknown
+  rule_url: https://forum.beyond3d.com/help/terms/
+  rule_quote: null
+  checked_at: 2026-11-09

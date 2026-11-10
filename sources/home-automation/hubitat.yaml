@@ -1,0 +1,14 @@
+id: hubitat
+name: "Hubitat Community"
+description: "Local-first smart home hubs, drivers and automations."
+status: untested
+topics: [home-automation, smart-home]
+engine: discourse
+base_url: https://community.hubitat.com
+domains: [community.hubitat.com]
+login_url: https://community.hubitat.com/login
+automation:
+  policy: unknown
+  rule_url: https://community.hubitat.com/tos
+  rule_quote: null
+  checked_at: 2026-11-09

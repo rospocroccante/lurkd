@@ -1,0 +1,14 @@
+id: joplin
+name: "Joplin Forum"
+description: "Open source note taking and synchronisation."
+status: untested
+topics: [tools, notes]
+engine: discourse
+base_url: https://discourse.joplinapp.org
+domains: [discourse.joplinapp.org]
+login_url: https://discourse.joplinapp.org/login
+automation:
+  policy: unknown
+  rule_url: https://discourse.joplinapp.org/tos
+  rule_quote: null
+  checked_at: 2026-11-09

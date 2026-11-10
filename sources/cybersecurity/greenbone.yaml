@@ -1,0 +1,14 @@
+id: greenbone
+name: "Greenbone Community Forum"
+description: "Vulnerability scanning with OpenVAS and Greenbone tooling."
+status: untested
+topics: [cybersecurity, vulnerability-management]
+engine: discourse
+base_url: https://forum.greenbone.net
+domains: [forum.greenbone.net]
+login_url: https://forum.greenbone.net/login
+automation:
+  policy: unknown
+  rule_url: https://forum.greenbone.net/tos
+  rule_quote: null
+  checked_at: 2026-11-09

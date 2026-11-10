@@ -1,0 +1,14 @@
+id: veganforum
+name: "VeganForum"
+description: "Vegan nutrition, health, recipes and everyday questions."
+status: public_read
+topics: [vegetarian-nutrition, vegan]
+engine: xenforo
+base_url: https://www.veganforum.org
+domains: [www.veganforum.org]
+login_url: https://www.veganforum.org/login/
+automation:
+  policy: unknown
+  rule_url: https://www.veganforum.org/help/terms/
+  rule_quote: null
+  checked_at: 2026-11-09
