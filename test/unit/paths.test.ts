@@ -56,7 +56,7 @@ describe('ensureHome', () => {
 });
 
 describe('package metadata', () => {
-  it('reads VERSION from package.json', () => expect(VERSION).toBe('0.2.0'));
+  it('reads VERSION from package.json', () => expect(VERSION).toBe('0.2.1'));
 
   it('points PACKAGE_ROOT at the folder holding package.json', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8')) as { name: string };

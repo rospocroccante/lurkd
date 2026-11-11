@@ -1,13 +1,16 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiClient } from '../../src/client/api.js';
 import { runCommand } from '../../src/cli/commands.js';
 import { EXIT_CODE, LurkdError } from '../../src/errors.js';
 import type { ArchiveHitOut, AuthorSignalsOut, FetchResponse, SampleOut, SessionStatusOut } from '../../src/fetch/service.js';
-import { PACKAGE_ROOT } from '../../src/paths.js';
+import { writeRunFile } from '../../src/launcher/runfile.js';
+import { lurkdPaths, PACKAGE_ROOT, VERSION } from '../../src/paths.js';
 import { bareHostile, HOSTILE_NAME, hostileRegistry, thrown } from '../helpers/hostile.js';
 
 // The CLI mirror against a fake ApiClient, and once as the real bin for the usage and help paths
@@ -579,7 +582,7 @@ describe('the lurkd bin', () => {
   it('lists the four lifecycle commands, the six mirror commands and add in --help', () => {
     const r = run(['--help']);
     expect(r.status).toBe(0);
-    for (const c of ['start', 'stop', 'status', 'mcp', 'sources', 'fetch', 'search', 'session', 'sample', 'author', 'add', 'import']) {
+    for (const c of ['start', 'stop', 'status', 'update', 'mcp', 'sources', 'fetch', 'search', 'session', 'sample', 'author', 'add', 'import']) {
       expect(r.stdout, c).toMatch(new RegExp(`^  ${c}\\b`, 'm'));
     }
   });
@@ -596,4 +599,95 @@ describe('the lurkd bin', () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('Unknown command: frobnicate');
   });
+
+  it('exits 2 for an unknown update flag, before it asks the registry', () => {
+    const r = run(['update', '--force']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('Usage: lurkd update [--yes]');
+  });
+});
+
+// D53: the bin against a stub server on 127.0.0.1 that a run file of another version points at.
+describe('the lurkd bin and a running server', () => {
+  const OLD = '0.0.1';
+  const update = { current: OLD, latest: '99.0.0', checkedAt: '2026-11-11T09:00:00.000Z' };
+  let server: http.Server;
+  let home: string;
+  let seen: string[];
+
+  beforeEach(async () => {
+    seen = [];
+    server = http.createServer((req, res) => {
+      seen.push(req.url ?? '');
+      const json = (v: unknown, status = 200) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(v));
+      if (req.url === '/health') return json({ ok: true, version: OLD, pid: process.pid, browser: 'ready' });
+      if (req.url === '/api/update') return json({ update });
+      if (req.url === '/api/status')
+        return json({ version: OLD, pid: process.pid, browser: { state: 'ready', lastError: null }, queueLength: 0, attention: [], update });
+      if (req.url?.startsWith('/api/archive/search')) return json([]);
+      return json({ error: { code: 'not_found', message: 'No such route.' } }, 404);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'lurkd-cli-run-'));
+    const paths = lurkdPaths({ LURKD_HOME: home });
+    writeRunFile(paths, { pid: process.pid, port: (server.address() as AddressInfo).port, token: 'c'.repeat(64), version: OLD, startedAt: new Date().toISOString() });
+  });
+
+  afterEach(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  /** The bin, run without blocking this process, which serves the stub. */
+  const runAsync = (args: string[]) =>
+    new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', path.join(PACKAGE_ROOT, 'src', 'bin', 'lurkd.ts'), ...args], {
+        cwd: PACKAGE_ROOT,
+        env: { ...process.env, LURKD_HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8').on('data', (d: string) => (stdout += d));
+      child.stderr.setEncoding('utf8').on('data', (d: string) => (stderr += d));
+      child.once('exit', (status) => resolve({ status, stdout, stderr }));
+    });
+
+  const SKEW = `A lurkd server of version ${OLD} is running; this command is version ${VERSION}, which is newer. Run lurkd stop, then lurkd start.`;
+
+  // L1: a route the older server lacks prints the skew line once, not once more in the error.
+  it('prints the skew line once when the older server lacks the route', async () => {
+    const r = await runAsync(['sources']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr.split(SKEW).length - 1).toBe(1);
+    expect(r.stderr).toContain('does not know this request');
+  }, 30_000);
+
+  it('names the other version once, then the newer lurkd on one stderr line', async () => {
+    const r = await runAsync(['search', 'gpu']);
+    expect(r.status).toBe(0);
+    expect(r.stderr.split('\n').filter((l) => l !== '')).toEqual([SKEW, 'lurkd 99.0.0 is available: run lurkd update']);
+    expect(r.stdout).not.toContain('99.0.0');
+    expect(seen).toContain('/api/update');
+  }, 30_000);
+
+  it('prints no notice with --json', async () => {
+    const r = await runAsync(['search', 'gpu', '--json']);
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual([]);
+    expect(r.stderr).not.toContain('is available');
+    expect(seen).not.toContain('/api/update');
+  }, 30_000);
+
+  it('shows the update in lurkd status, and in --json, without a second line', async () => {
+    const text = await runAsync(['status']);
+    expect(text.status).toBe(0);
+    expect(text.stdout).toContain('Update: lurkd 99.0.0 is available. Run lurkd update in a terminal to install it.');
+    expect(text.stderr).not.toContain('is available');
+    expect(text.stderr).toContain(SKEW);
+    const json = await runAsync(['status', '--json']);
+    expect((JSON.parse(json.stdout) as { update: unknown }).update).toEqual(update);
+    expect(json.stderr).not.toContain('is available');
+  }, 30_000);
 });

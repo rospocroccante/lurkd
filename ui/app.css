@@ -615,6 +615,7 @@ input.switch:indeterminate::before { transform: translateX(7px); }
 }
 .settings > summary { padding: 8px 12px; font-weight: 600; cursor: pointer; }
 .settings-body { display: grid; gap: 10px; padding: 0 12px 12px; }
+.field-check p { flex-basis: 100%; }
 .cookie-notice summary { cursor: pointer; font-weight: 600; font-size: 0.875rem; }
 .cookie-notice p { margin-top: 6px; font-size: 0.875rem; overflow-wrap: anywhere; }
 footer.foot { padding-top: 8px; }

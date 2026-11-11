@@ -18,6 +18,7 @@ import { AddRequestStore, DraftStore, ForbiddenLog, SampleStore } from '../../sr
 import type { ResolveHost } from '../../src/sources/analyse.js';
 import { GroupStore } from '../../src/sources/groups.js';
 import { Registry } from '../../src/sources/registry.js';
+import { UpdateStore } from '../../src/update/check.js';
 import { formatError } from '../../src/client/format.js';
 import { bareHostile, HOSTILE_NAME } from '../helpers/hostile.js';
 
@@ -215,6 +216,8 @@ describe('createApp', () => {
       queue,
       uiDir,
       shutdown,
+      // M3: the draft routes look names up; nothing here reaches a DNS server.
+      resolveHost: async () => [{ address: '93.184.215.14', family: 4 }],
     };
     app = createApp(deps);
     COOKIE = await pageCookie(app);
@@ -929,6 +932,71 @@ describe('createApp', () => {
       expect((await ui('/api/drafts/999/approve')).status).toBe(404);
     });
 
+    // 0.2.1: a draft 0.2.0 stored, before the address rules, meets them and the DNS check on approval.
+    it('holds a draft stored before the address rules to them, and to the DNS check, on approval', async () => {
+      const LOCAL = 'lurkd opens public forums only, not addresses on your own network.';
+      const stored = (id: string, host: string, extra: Record<string, unknown> = {}): number =>
+        Number(
+          db
+            .prepare('INSERT INTO drafts (source_id, host, yaml, warnings, state, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(id, host, sourceYaml(id, host, { engine: 'generic', status: 'untested', enabled: false, ...extra }), '[]', 'pending', '2026-11-01T10:00:00.000Z')
+            .lastInsertRowid,
+        );
+      const refused = async (r: Response): Promise<string[]> => {
+        expect(r.status).toBe(400);
+        const out = (await r.json()) as { error: { code: string; details: { errors: string[] } } };
+        expect(out.error.code).toBe('invalid_request');
+        return out.error.details.errors;
+      };
+      const login = stored('dr', 'dr.example', { domains: ['dr.example', '192.168.1.10'], login_url: 'https://192.168.1.10/login' });
+      expect(await refused(await ui(`/api/drafts/${login}/approve`))).toContain(`dr.yaml: login_url: ${LOCAL}`);
+      const rule = stored('dr2', 'dr2.example', { automation: { policy: 'allowed', rule_url: 'https://user:secret@dr2.example/rules', rule_quote: 'Bots welcome.', checked_at: '2026-11-08' } });
+      const ruleErrors = await refused(await ui(`/api/drafts/${rule}/approve`));
+      expect(ruleErrors).toEqual(['dr2.yaml: automation.rule_url: lurkd does not open addresses that carry a user name or password.']);
+      expect(JSON.stringify(ruleErrors)).not.toContain('secret');
+      const reddit = stored('dr3', 'dr3.example', { automation: { policy: 'allowed', rule_url: 'https://www.reddit.com/r/dr3/wiki/rules', rule_quote: 'Bots welcome.', checked_at: '2026-11-08' } });
+      expect(await refused(await ui(`/api/drafts/${reddit}/approve`))).toEqual([
+        'dr3.yaml: automation.rule_url: lurkd never reads Reddit live; Reddit threads come from files you saved (lurkd import reddit).',
+      ]);
+      // The base host resolves to a private address: the app's resolver, never real DNS.
+      const resolveHost = vi.fn<ResolveHost>(async () => [{ address: '192.168.1.1', family: 4 }]);
+      const dns = createApp({ ...deps, resolveHost });
+      const dnsCookie = await pageCookie(dns);
+      const base = stored('dr4', 'dr4.example');
+      const r = await dns.request(`${ORIGIN}/api/drafts/${base}/approve`, { method: 'POST', headers: { cookie: dnsCookie, origin: ORIGIN, 'content-type': 'application/json' }, body: '{}' });
+      expect(await refused(r)).toEqual([`dr4.yaml: base_url: ${LOCAL}`, `dr4.yaml: domains: ${LOCAL}`]);
+      expect(resolveHost).toHaveBeenCalledWith('dr4.example');
+      for (const id of ['dr', 'dr2', 'dr3', 'dr4']) {
+        expect(registry.ids()).not.toContain(id);
+        expect(fs.existsSync(path.join(tmp, 'user', `${id}.yaml`))).toBe(false);
+      }
+      expect(drafts.list('pending').map((d) => d.id)).toEqual([login, rule, reddit, base]);
+      // A clean draft still approves, through the default app's public resolver.
+      const clean = stored('dr5', 'dr5.example');
+      expect((await ui(`/api/drafts/${clean}/approve`)).status).toBe(200);
+      expect(registry.ids()).toContain('dr5');
+    });
+
+    it('lets a loopback draft through approval only with the test-only allowance', async () => {
+      const yaml = sourceYaml('loop', '127.0.0.1', { engine: 'generic', status: 'untested', enabled: false, base_url: 'http://127.0.0.1:4123', automation: { policy: 'allowed', rule_url: 'http://127.0.0.1:4123/rules', rule_quote: 'Bots welcome.', checked_at: '2026-11-08' } });
+      const id = Number(
+        db
+          .prepare('INSERT INTO drafts (source_id, host, yaml, warnings, state, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .run('loop', '127.0.0.1', yaml, '[]', 'pending', '2026-11-01T10:00:00.000Z').lastInsertRowid,
+      );
+      const resolveHost = vi.fn<ResolveHost>(async () => [{ address: '93.184.215.14', family: 4 }]);
+      const plain = createApp({ ...deps, resolveHost });
+      const tests = createApp({ ...deps, resolveHost, allowLoopbackForTests: true });
+      const approve = async (a: ReturnType<typeof createApp>) =>
+        a.request(`${ORIGIN}/api/drafts/${id}/approve`, { method: 'POST', headers: { cookie: await pageCookie(a), origin: ORIGIN, 'content-type': 'application/json' }, body: '{}' });
+      expect((await approve(plain)).status).toBe(400);
+      expect(registry.ids()).not.toContain('loop');
+      expect((await approve(tests)).status).toBe(200);
+      expect(registry.ids()).toContain('loop');
+      // 127.0.0.1 is not looked up under the allowance.
+      expect(resolveHost).not.toHaveBeenCalled();
+    });
+
     it('deletes the archive of a source through ThreadStore.deleteSource', async () => {
       const spy = vi.spyOn(threads, 'deleteSource');
       const r = await ui('/api/sources/lg/archive', undefined, 'DELETE');
@@ -1050,6 +1118,85 @@ describe('createApp', () => {
     });
   });
 
+  describe('update check (D53)', () => {
+    const CHECKED = '2026-11-11T09:00:00.000Z';
+    let updates: UpdateStore;
+    let nudged: Mock<(on: boolean) => void>;
+
+    beforeEach(async () => {
+      updates = new UpdateStore(db, { version: '0.1.0', env: {} });
+      nudged = vi.fn<(on: boolean) => void>();
+      app = createApp({ ...deps, updates, onUpdateCheckChanged: nudged });
+      COOKIE = await pageCookie(app);
+    });
+
+    const pageState = async () => (await (await get('/api/state', { cookie: COOKIE })).json()) as { update: unknown; updateCheck: unknown };
+
+    it('reports nothing until the registry named a newer version', async () => {
+      expect(await pageState()).toMatchObject({ update: null, updateCheck: { on: true, offByEnv: false } });
+      updates.recordSuccess('0.1.0', CHECKED);
+      expect((await pageState()).update).toBeNull();
+    });
+
+    it('puts a newer version in /api/state, /api/status and /api/update', async () => {
+      updates.recordSuccess('0.3.0', CHECKED);
+      const info = { current: '0.1.0', latest: '0.3.0', checkedAt: CHECKED };
+      expect((await pageState()).update).toEqual(info);
+      expect(((await (await get('/api/status', bearer)).json()) as { update: unknown }).update).toEqual(info);
+      expect(await (await get('/api/update', bearer)).json()).toEqual({ update: info });
+      // The page's cookie reads it too.
+      expect(await (await get('/api/update', { cookie: COOKIE })).json()).toEqual({ update: info });
+      expect((await get('/api/update')).status).toBe(401);
+    });
+
+    it('switches the check off and on from the page only', async () => {
+      updates.recordSuccess('0.3.0', CHECKED);
+      const off = await ui('/api/settings/update-check', { enabled: false });
+      expect(off.status).toBe(200);
+      expect(await off.json()).toEqual({ updateCheck: { on: false, offByEnv: false } });
+      expect(await pageState()).toMatchObject({ update: null, updateCheck: { on: false, offByEnv: false } });
+      expect(((await (await get('/api/status', bearer)).json()) as { update: unknown }).update).toBeNull();
+      expect(nudged).toHaveBeenLastCalledWith(false);
+      expect((await ui('/api/settings/update-check', { enabled: true })).status).toBe(200);
+      expect((await pageState()).update).not.toBeNull();
+      expect(nudged).toHaveBeenLastCalledWith(true);
+      // The agent's token cannot change it, and a body without a boolean is refused.
+      expect((await send('POST', '/api/settings/update-check', { enabled: false }, bearer)).status).toBe(401);
+      expect((await send('POST', '/api/settings/update-check', { enabled: false }, { cookie: COOKIE })).status).toBe(403);
+      expect((await ui('/api/settings/update-check', { enabled: 'no' })).status).toBe(400);
+      expect(updates.userEnabled()).toBe(true);
+    });
+
+    // M2: the dismissal lives in the archive, so it outlives a restart on another port.
+    it('stores a dismissed banner version on the server, from the page only', async () => {
+      updates.recordSuccess('0.3.0', CHECKED);
+      expect(await pageState()).toMatchObject({ updateDismissed: null });
+      const r = await ui('/api/update/dismiss', { version: '0.3.0' });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({ updateDismissed: '0.3.0' });
+      expect(updates.dismissed()).toBe('0.3.0');
+      expect(await pageState()).toMatchObject({ updateDismissed: '0.3.0' });
+      // A new app on the same archive (a restarted server) still knows it.
+      app = createApp({ ...deps, updates: new UpdateStore(db, { version: '0.1.0', env: {} }) });
+      COOKIE = await pageCookie(app);
+      expect(await pageState()).toMatchObject({ updateDismissed: '0.3.0' });
+      // The agent's token cannot dismiss, nor the cookie without the page's Origin; only a plain version is stored.
+      expect((await send('POST', '/api/update/dismiss', { version: '0.4.0' }, bearer)).status).toBe(401);
+      expect((await send('POST', '/api/update/dismiss', { version: '0.4.0' }, { cookie: COOKIE })).status).toBe(403);
+      for (const version of ['0.4.0-beta', 'x', 3, null, '1.2.3\n'])
+        expect((await ui('/api/update/dismiss', { version })).status, String(version)).toBe(400);
+      expect(updates.dismissed()).toBe('0.3.0');
+    });
+
+    it('says when the environment turned the check off', async () => {
+      const envOff = new UpdateStore(db, { version: '0.1.0', env: { LURKD_NO_UPDATE_CHECK: '1' } });
+      envOff.recordSuccess('0.3.0', CHECKED);
+      app = createApp({ ...deps, updates: envOff });
+      COOKIE = await pageCookie(app);
+      expect(await pageState()).toMatchObject({ update: null, updateCheck: { on: false, offByEnv: true } });
+    });
+  });
+
   describe('Add a forum (D45)', () => {
     const form = (over: Record<string, unknown> = {}) => ({
       engine: 'discourse',
@@ -1074,6 +1221,48 @@ describe('createApp', () => {
       // The page lists it for "Analyse".
       const s = (await (await get('/api/state', { cookie: COOKIE })).json()) as { addRequests: unknown[] };
       expect(s.addRequests).toEqual([{ host: 'bench.example', url: 'https://bench.example/forums/', requestedAt: expect.any(String) }]);
+    });
+
+    // 0.2.1: the form's draft and an agent's draft (source.sample) follow one set of address rules.
+    it('refuses a form draft whose addresses lurkd would not open, naming the field only', async () => {
+      for (const [over, field] of [
+        [{ base_url: 'https://10.0.0.5', domains: ['10.0.0.5'], login_url: null, signup_url: null }, 'base_url'],
+        [{ domains: ['plants.example', 'nas.local'] }, 'domains'],
+        [{ domains: ['plants.example', '192.168.1.9'], login_url: 'https://192.168.1.9/login' }, 'login_url'],
+      ] as const) {
+        const r = await ui('/api/add/draft', form(over));
+        const text = await r.text();
+        expect(r.status, field).toBe(400);
+        const errors = (JSON.parse(text) as { error: { details: { errors: string[] } } }).error.details.errors;
+        expect(errors.some((l) => l.includes(`${field}: lurkd opens public forums only`)), errors.join(' | ')).toBe(true);
+      }
+      expect(drafts.list('pending')).toEqual([]);
+    });
+
+    // M3: the form's draft runs the DNS half too, for the base host and every domain.
+    it('refuses a form draft whose names resolve to private addresses', async () => {
+      const looked: string[] = [];
+      app = createApp({
+        ...deps,
+        resolveHost: async (host) => {
+          looked.push(host);
+          return [{ address: host === 'plants.example' ? '10.9.8.7' : '93.184.215.14', family: 4 }];
+        },
+      });
+      COOKIE = await pageCookie(app);
+      const r = await ui('/api/add/draft', form());
+      expect(r.status).toBe(400);
+      const errors = ((await r.json()) as { error: { details: { errors: string[] } } }).error.details.errors;
+      expect(errors.some((l) => l.includes('base_url: lurkd opens public forums only')), errors.join(' | ')).toBe(true);
+      expect(looked).toContain('plants.example');
+      expect(drafts.list('pending')).toEqual([]);
+      // The rules page of the form is checked as well.
+      app = createApp(deps);
+      COOKIE = await pageCookie(app);
+      const bad = await ui('/api/add/draft', form({ automation: { policy: 'unknown', rule_url: 'https://192.168.0.1/tos', rule_quote: null } }));
+      expect(bad.status).toBe(400);
+      expect(await bad.text()).toContain('automation.rule_url: lurkd opens public forums only');
+      expect((await ui('/api/add/draft', form())).status).toBe(200);
     });
 
     it('answers with the source id when a source already claims the host', async () => {
@@ -1245,7 +1434,8 @@ describe('createApp', () => {
       const stored = YAML.parse(d.yaml) as Record<string, unknown>;
       expect(stored).toMatchObject({ status: 'untested', enabled: false });
       for (const k of ['show_real_names', 'allow_beacons', 'rate_limit', 'pagination', 'read_endpoints']) expect(stored, k).not.toHaveProperty(k);
-      const source = drafts.approve(d.id);
+      expect((await ui(`/api/drafts/${d.id}/approve`)).status).toBe(200);
+      const source = registry.get('plants-example');
       expect(source).toMatchObject({ status: 'untested', enabled: false, show_real_names: false, allow_beacons: false, read_endpoints: [] });
       expect(source.rate_limit).toEqual({ min_delay_s: 2, max_requests_per_run: 60, max_requests_per_day: 300 });
       expect(() => registry.assertUsable('plants-example')).toThrow(expect.objectContaining({ code: 'disabled' }));

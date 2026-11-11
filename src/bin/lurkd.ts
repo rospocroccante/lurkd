@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import { createApiClient } from '../client/api.js';
+import { createApiClient, skewMessage } from '../client/api.js';
 import { MIRROR_COMMANDS, MIRROR_HELP, runCommand } from '../cli/commands.js';
+import { updateNotice, wantsNotice } from '../cli/notice.js';
 import { EXIT_CODE, LurkdError } from '../errors.js';
 import { checkHealth, ensureServer, openPage, serverUrl, stopServer } from '../launcher/launcher.js';
 import { readRunFile, type RunInfo } from '../launcher/runfile.js';
 import { statusJson, statusText, type ApiStatus } from '../launcher/status.js';
 import { runMcpStdio } from '../mcp/server.js';
 import { lurkdPaths, VERSION, type LurkdPaths } from '../paths.js';
+import { defaultUpdateDeps, runUpdate } from '../update/install.js';
 
 const USAGE = `Usage: lurkd <command>
 
@@ -18,8 +20,12 @@ Commands:
                       With --no-open, print the link instead. A link works once, within
                       60 seconds, and never holds the lurkd token.
   stop                Stop the lurkd server.
-  status [--json]     Show whether the server is running, its browser, queue and the sources
-                      that need you. Exits 1 when the server is not running.
+  status [--json]     Show whether the server is running, its browser, queue, the sources
+                      that need you and a newer lurkd version, if there is one. Exits 1 when
+                      the server is not running.
+  update [--yes]      Install the latest lurkd with npm: stop the server, copy the archive to
+                      ~/.lurkd/backups/, run npm i -g lurkd@<latest>, check the new version and
+                      print how to go back. Asks first; --yes skips the question.
   mcp [--tool-names=dot|underscore]
                       Serve the agent tools over MCP on stdin and stdout. The server starts
                       on the first tool call. underscore names the tools sources_search and
@@ -66,6 +72,8 @@ async function start(paths: LurkdPaths, args: string[], command: 'start' | 'open
   const { info, started } = await ensureServer(paths);
   if (started) out(`Started lurkd ${info.version}.`);
   else if (command === 'start') out('lurkd is already running.');
+  // D53: a server an earlier (or later) lurkd started keeps running until it is restarted.
+  if (!started && info.version !== VERSION) err(skewMessage(info.version, VERSION));
   const { link, opened } = await openPage(info, { open: !f.has('--no-open') });
   if (opened) out('Opened the lurkd page in your browser.');
   else {
@@ -108,6 +116,7 @@ async function status(paths: LurkdPaths, args: string[]): Promise<number> {
     out(json ? JSON.stringify({ running: false }) : 'lurkd is not running.');
     return 1;
   }
+  if (info.version !== VERSION) err(skewMessage(info.version, VERSION));
   const s = await fetchStatus(info);
   const url = serverUrl(info);
   out(json ? statusJson(url, s) : statusText(url, s));
@@ -149,11 +158,14 @@ async function main(argv: string[]): Promise<number> {
       return status(paths, rest);
     case 'mcp':
       return mcp(paths, rest);
+    case 'update':
+      windowsCheck();
+      return runUpdate(rest, defaultUpdateDeps(paths));
     default:
       if (cmd !== undefined && MIRROR_COMMANDS.includes(cmd)) {
         windowsCheck();
         return runCommand(argv, {
-          client: createApiClient(paths, { autoStart: true }),
+          client: createApiClient(paths, { autoStart: true, onSkew: err }),
           out,
           err,
           readFile: (p) => fs.readFileSync(p, 'utf8'),
@@ -167,9 +179,27 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-main(process.argv.slice(2)).then(
-  (code) => {
+/**
+ * D53: after a command, one stderr line when the running server knows of a newer lurkd. The CLI
+ * reads it from the server and never asks the registry itself. Never with --json, never under mcp.
+ */
+async function notice(argv: string[]): Promise<void> {
+  if (!wantsNotice(argv)) return;
+  try {
+    const paths = lurkdPaths();
+    if (readRunFile(paths) === null) return;
+    const line = await updateNotice(createApiClient(paths, { timeoutMs: 2_000 }), VERSION);
+    if (line !== null) err(line);
+  } catch {
+    // the notice is never worth an error
+  }
+}
+
+const argv = process.argv.slice(2);
+main(argv).then(
+  async (code) => {
     process.exitCode = code;
+    await notice(argv);
   },
   (e: unknown) => {
     if (e instanceof UsageError) {

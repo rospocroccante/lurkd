@@ -16,6 +16,7 @@ import type { ArchiveHitOut, FetchService } from '../../src/fetch/service.js';
 import { createApp, type AppDeps } from '../../src/server/app.js';
 import { AddRequestStore, DraftStore, ForbiddenLog, SampleStore } from '../../src/sources/drafts.js';
 import { Registry } from '../../src/sources/registry.js';
+import { UpdateStore } from '../../src/update/check.js';
 import { lurkdPaths, PACKAGE_ROOT } from '../../src/paths.js';
 import { startServer } from '../../src/server/main.js';
 import { UNKNOWN_ENGINE_TEXT } from '../../ui/view.js';
@@ -112,6 +113,8 @@ describe('the lurkd page', () => {
   let origin: string;
   let page: Page;
   let problems: string[];
+  let updates: UpdateStore;
+  let appDeps: AppDeps;
   let service: {
     archiveSearch: ReturnType<typeof vi.fn>;
     sessionStatus: ReturnType<typeof vi.fn>;
@@ -141,6 +144,8 @@ describe('the lurkd page', () => {
     );
     db = openArchive(':memory:');
     const state = new StateStore(db);
+    // D53: on, as a fresh install is, with nothing found yet; no request is ever made here.
+    updates = new UpdateStore(db, { version: '0.1.0', env: {} });
     registry = Registry.load({ seedDir, userDir, state });
     expect(registry.errors()).toEqual([]);
     queue = new FetchQueue();
@@ -151,7 +156,7 @@ describe('the lurkd page', () => {
       threadMarkdown: vi.fn(() => `# B12 levels\n\n## Post 1 by ${MARKERS}\n\n<b>not bold</b> and <script>window.__pwned = 1</script>`),
     };
     let port = 0;
-    const deps: AppDeps = {
+    const deps: AppDeps = (appDeps = {
       token: TOKEN,
       port: () => port,
       version: '0.1.0',
@@ -168,7 +173,10 @@ describe('the lurkd page', () => {
       queue,
       uiDir: path.join(PACKAGE_ROOT, 'ui'),
       shutdown: () => {},
-    };
+      updates,
+      // M3: the draft routes look names up; nothing here reaches a DNS server.
+      resolveHost: async () => [{ address: '93.184.215.14', family: 4 }],
+    });
     const app = createApp(deps);
     server = await new Promise<http.Server>((resolve) => {
       const s = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
@@ -198,6 +206,101 @@ describe('the lurkd page', () => {
     await page.goto(await pageLink(Number(new URL(origin).port), TOKEN));
     await page.getByText('fb forum', { exact: true }).waitFor();
   };
+
+  // D53: the banner for a newer lurkd and the "Check for new versions" switch.
+  it('shows a newer lurkd in a banner that Dismiss hides for that version only, and switches the check off', async () => {
+    updates.recordSuccess('0.3.0', '2026-11-11T09:00:00.000Z');
+    await open();
+    const banner = page.locator('#update-banner');
+    await see(banner);
+    await has(banner, 'lurkd 0.3.0 is available. Run lurkd update in a terminal to install it.');
+    await banner.getByRole('button', { name: 'Dismiss' }).click();
+    await gone(banner);
+    // M2: the dismissal is stored by the server, not in this browser's storage for this port.
+    await poll(() => updates.dismissed()).toBe('0.3.0');
+    expect(await page.evaluate(() => JSON.stringify({ ...localStorage }))).toBe('{}');
+    await page.reload();
+    await page.getByText('fb forum', { exact: true }).waitFor();
+    expect(await banner.isHidden()).toBe(true);
+    // A restarted server on another port (another origin, so other browser storage) still hides it.
+    const before = origin;
+    await new Promise((r) => server.close(r));
+    server.closeAllConnections();
+    let port2 = 0;
+    const app2 = createApp({ ...appDeps, port: () => port2, updates: new UpdateStore(db, { version: '0.1.0', env: {} }) });
+    server = await new Promise<http.Server>((resolve) => {
+      const s2 = serve({ fetch: app2.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
+        port2 = info.port;
+        resolve(s2 as unknown as http.Server);
+      });
+    });
+    origin = `http://127.0.0.1:${port2}`;
+    expect(origin).not.toBe(before);
+    await open();
+    await page.locator('#settings > summary').waitFor();
+    // The page has drawn its state: the directory is there and the banner stays hidden.
+    expect(await banner.isHidden()).toBe(true);
+    // A newer version shows again.
+    updates.recordSuccess('0.4.0', '2026-11-12T09:00:00.000Z');
+    await see(banner, 8000);
+    await has(banner, 'lurkd 0.4.0 is available.');
+    // Settings: on by default; switching it off hides the banner and stores the choice.
+    await page.locator('#settings > summary').click();
+    const sw = page.getByRole('switch', { name: 'Check for new versions' });
+    expect(await sw.isChecked()).toBe(true);
+    await sw.click();
+    await poll(() => updates.userEnabled()).toBe(false);
+    await gone(banner);
+    expect(await sw.isChecked()).toBe(false);
+    await sw.click();
+    await poll(() => updates.userEnabled()).toBe(true);
+    await see(banner);
+    expect(problems).toEqual([]);
+  });
+
+  it('greys out the switch when the environment turned the check off', async () => {
+    await page.close();
+    await new Promise((r) => server.close(r));
+    server.closeAllConnections();
+    const envOff = new UpdateStore(db, { version: '0.1.0', env: { LURKD_NO_UPDATE_CHECK: '1' } });
+    envOff.recordSuccess('0.3.0', '2026-11-11T09:00:00.000Z');
+    let port = 0;
+    const app = createApp({
+      token: TOKEN,
+      port: () => port,
+      version: '0.1.0',
+      db,
+      service: service as unknown as FetchService,
+      registry,
+      state: new StateStore(db),
+      threads: new ThreadStore(db, 'a'.repeat(64)),
+      drafts: new DraftStore(db, registry),
+      samples: new SampleStore(db),
+      addRequests: new AddRequestStore(db),
+      forbidden: new ForbiddenLog(db),
+      browser: browser as unknown as BrowserManager,
+      queue,
+      uiDir: path.join(PACKAGE_ROOT, 'ui'),
+      shutdown: () => {},
+      updates: envOff,
+      resolveHost: async () => [{ address: '93.184.215.14', family: 4 }],
+    });
+    server = await new Promise<http.Server>((resolve) => {
+      const s = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
+        port = info.port;
+        resolve(s as unknown as http.Server);
+      });
+    });
+    origin = `http://127.0.0.1:${port}`;
+    page = await chrome.newPage({ viewport: { width: 1000, height: 900 } });
+    await open();
+    await page.locator('#settings > summary').click();
+    const sw = page.getByRole('switch', { name: 'Check for new versions' });
+    await poll(() => sw.isDisabled()).toBe(true);
+    expect(await sw.isChecked()).toBe(false);
+    await has(page.locator('#update-check-note'), 'LURKD_NO_UPDATE_CHECK=1');
+    expect(await page.locator('#update-banner').isHidden()).toBe(true);
+  });
 
   it('walks the directory, the acknowledgment, the search and the handoff banner', async () => {
     await open();

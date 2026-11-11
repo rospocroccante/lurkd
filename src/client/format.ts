@@ -1,7 +1,7 @@
 import type { ErrorCode, LurkdError } from '../errors.js';
 import type { ArchiveHitOut, AuthorSignalsOut, FetchResponse, RedditImportOut, SampleOut, SessionStatusOut } from '../fetch/service.js';
 import { MAX_IMPORT_COMMENTS } from '../extract/reddit-import.js';
-import { quotedDescription, quotedName } from '../output/quoted.js';
+import { quoteAddresses, quotedDescription, quotedName } from '../output/quoted.js';
 import { formatDate } from '../output/render.js';
 import type { SourceView } from '../sources/registry.js';
 
@@ -63,9 +63,10 @@ function safeUrl(u: string): string {
   }
 }
 
+/** The server's message, cut short, with every address in it quoted as data (0.2.1). */
 function cleanMessage(m: string): string {
   const t = m.trim();
-  return t.length > MAX_MESSAGE_CHARS ? `${t.slice(0, MAX_MESSAGE_CHARS)}...` : t;
+  return quoteAddresses(t.length > MAX_MESSAGE_CHARS ? `${t.slice(0, MAX_MESSAGE_CHARS)}...` : t);
 }
 
 const loginAction = (id: string): string =>
@@ -146,7 +147,7 @@ function stopLine(stopped: NonNullable<FetchResponse['stopped']>, id: string): s
   if (stopped.code === 'needs_login') return `Stopped: needs_login. ${loginAction(id)}`;
   if (stopped.code === 'challenge') return `Stopped: challenge. ${challengeAction(id)}`;
   const step = nextStep(stopped.code, id);
-  return `Stopped: ${stopped.code}. ${oneLine(stopped.message)}${step === null ? '' : ` ${step}`}`;
+  return `Stopped: ${stopped.code}. ${quoteAddresses(oneLine(stopped.message))}${step === null ? '' : ` ${step}`}`;
 }
 
 export function formatFetch(r: FetchResponse): string {

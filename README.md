@@ -50,7 +50,7 @@ claude mcp add --scope user lurkd -- lurkd mcp
 | `source.sample` | `lurkd sample` | Describes a page so the agent can draft a new source |
 | `author.signals` | `lurkd author` | Shows post count and join date for one pseudonym |
 
-The CLI also has `lurkd add <url>`, which queues a forum for you to analyse on the page, and `lurkd import reddit <file>`, which imports one Reddit thread you saved from your own browser.
+The CLI also has `lurkd add <url>`, which queues a forum for you to analyse on the page, `lurkd import reddit <file>`, which imports one Reddit thread you saved from your own browser, and `lurkd update`, which installs a newer lurkd after asking and backs up the archive first.
 
 ## Adding forums
 
@@ -67,6 +67,7 @@ lurkd never contacts Reddit. Reddit blocks automated readers, and its User Agree
 - Names written inside a post's text are not pseudonymised and reach your model provider as written.
 - Forum text arrives inside `<untrusted-content>` blocks, and the skill tells the agent never to follow it.
 - The browser profile's cookies use a fixed key, so the folder's 0700 mode is their only protection.
+- Once a day the server asks the npm registry for the latest version number and tells you when a newer lurkd exists. It never updates itself. Switch the check off under "Settings" on the page or with `LURKD_NO_UPDATE_CHECK=1`; [Getting started](docs/getting-started.md#updating) covers updating.
 - The page opens from a link that works once, so the server's token stays out of your browser history and the process list. Programs that run as you can still do anything you can.
 
 Read [Privacy and risks](docs/privacy-and-risks.md) before you log in to anything you care about. Changes per version are in [CHANGELOG.md](CHANGELOG.md).

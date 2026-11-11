@@ -231,6 +231,59 @@ describe('the MCP server', () => {
   });
 });
 
+// D53: a server of another version is named once, in the first tool result; the update notice
+// never reaches a tool result.
+describe('the MCP server and version skew', () => {
+  const SKEW = 'A lurkd server of version 0.2.0 is running; this command is version 0.2.1, which is newer. Run lurkd stop, then lurkd start.';
+
+  it('puts the restart note before the first answer only', async () => {
+    const fake = fakeClient();
+    fake.get.mockResolvedValue([]);
+    let note: string | null = SKEW;
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await buildMcpServer(fake, 'dot', {
+      takeNote: () => {
+        const n = note;
+        note = null;
+        return n;
+      },
+    }).connect(serverSide);
+    const c = new Client({ name: 'test', version: '0.0.0' });
+    await c.connect(clientSide);
+    const first = textOf(await c.callTool({ name: 'archive.search', arguments: { query: 'gpu' } }));
+    expect(first.startsWith(`${SKEW}\n\n`)).toBe(true);
+    const second = textOf(await c.callTool({ name: 'archive.search', arguments: { query: 'gpu' } }));
+    expect(second).not.toContain('A lurkd server of version');
+    await c.close();
+  });
+
+  it('puts the note before an error answer too', async () => {
+    const fake = fakeClient();
+    fake.get.mockRejectedValue(new LurkdError('server_unavailable', SKEW));
+    let note: string | null = SKEW;
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await buildMcpServer(fake, 'dot', { takeNote: () => [note, (note = null)][0] }).connect(serverSide);
+    const c = new Client({ name: 'test', version: '0.0.0' });
+    await c.connect(clientSide);
+    const r = (await c.callTool({ name: 'sources.search', arguments: {} })) as TextResult;
+    expect(r.isError).toBe(true);
+    // Said once, not twice, when the error is the skew itself.
+    expect(textOf(r).split('A lurkd server of version').length - 1).toBe(1);
+    await c.close();
+  });
+
+  it('never asks the server for the update notice', async () => {
+    const fake = fakeClient();
+    fake.get.mockResolvedValue([]);
+    fake.post.mockResolvedValue(fetched);
+    const c = await connect(fake);
+    await c.callTool({ name: 'sources.search', arguments: {} });
+    await c.callTool({ name: 'source.fetch', arguments: { source: 'a', query: 'b12' } });
+    expect(fake.get.mock.calls.map((x) => x[0])).not.toContain('/api/update');
+    await c.close();
+  });
+});
+
 describe('lurkd mcp as a process', () => {
   let home: string;
   let stub: http.Server;

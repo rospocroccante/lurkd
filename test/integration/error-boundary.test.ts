@@ -233,7 +233,7 @@ describe('page-thrown text stays off lurkd error lines', () => {
     expect(e).toBeInstanceOf(LurkdError);
     expect(agentText(e)).not.toContain('IGNORE');
     expect((e as LurkdError).message).not.toContain('IGNORE');
-    expect(agentText(e)).toMatch(/^Error extraction_failed: Reading http:\/\/localhost:\d+\/threads\/hostile\.1\/ failed in the browser\./);
+    expect(agentText(e)).toMatch(/^Error extraction_failed: Reading "http:\/\/localhost:\d+\/threads\/hostile\.1\/" failed in the browser\./);
     // The raw line is kept for the logs, in details, which no formatter prints.
     expect((e as LurkdError).details).toMatchObject({ error: expect.stringContaining('IGNORE') });
   });

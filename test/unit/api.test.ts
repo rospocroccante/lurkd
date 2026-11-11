@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApiClient } from '../../src/client/api.js';
+import { createApiClient, skewMessage } from '../../src/client/api.js';
 import { LurkdError } from '../../src/errors.js';
 import { writeRunFile } from '../../src/launcher/runfile.js';
 import { lurkdPaths, type LurkdPaths } from '../../src/paths.js';
@@ -258,5 +258,81 @@ describe('createApiClient', () => {
     runFile(stub.port);
     const err = (await createApiClient(paths).get('/x').catch((e: unknown) => e)) as LurkdError;
     expect(JSON.stringify({ m: err.message, d: err.details })).not.toContain(TOKEN);
+  });
+});
+
+// D53: a server started by another lurkd version.
+describe('version skew', () => {
+  const SKEW = 'A lurkd server of version 0.1.0 is running; this command is version 0.2.1, which is newer. Run lurkd stop, then lurkd start.';
+
+  // M1: the advice depends on which side is older.
+  it('tells an older client to restart the agent session or run the new lurkd, not to restart the server', () => {
+    const m = skewMessage('0.2.2', '0.2.1');
+    expect(m).toBe(
+      'This lurkd is version 0.2.1, older than the running lurkd server (version 0.2.2). If an agent runs it as lurkd mcp, restart the agent session so it loads the new version; in a terminal, run the new lurkd.',
+    );
+    expect(m).not.toContain('lurkd stop');
+    // A pre-release is older than its release.
+    expect(skewMessage('0.3.0', '0.3.0-beta.1')).toContain('older than the running lurkd server');
+  });
+
+  it('tells a newer client to restart the older server', () => {
+    expect(skewMessage('0.1.0', '0.2.1')).toBe(SKEW);
+    expect(skewMessage('0.2.1', '0.2.10')).toContain('Run lurkd stop, then lurkd start.');
+  });
+
+  it('falls back to the restart advice when a version does not parse', () => {
+    expect(skewMessage('weird', '0.2.1')).toBe('A lurkd server of version weird is running; this command is version 0.2.1. Run lurkd stop, then lurkd start.');
+  });
+
+  // L1: the caller that printed the skew line gets an error that does not repeat it.
+  it('does not repeat the skew line in the error when onSkew has told it', async () => {
+    const stub = await stubServer(() => ({ status: 404, body: JSON.stringify({ error: { code: 'not_found', message: 'No such route.' } }) }));
+    runFile(stub.port);
+    const onSkew = vi.fn();
+    const err = (await createApiClient(paths, { version: '0.2.1', onSkew }).get('/api/new-thing').catch((e: unknown) => e)) as LurkdError;
+    expect(onSkew).toHaveBeenCalledWith(SKEW);
+    expect(err.code).toBe('server_unavailable');
+    expect(err.message).toBe('The running lurkd server (version 0.1.0) does not know this request.');
+  });
+
+  it('says so once when the running server has another version', async () => {
+    const stub = await stubServer(() => ok([]));
+    runFile(stub.port);
+    const onSkew = vi.fn();
+    const client = createApiClient(paths, { version: '0.2.1', onSkew });
+    await client.get('/api/sources');
+    await client.get('/api/sources');
+    await client.post('/api/fetch', {});
+    expect(onSkew).toHaveBeenCalledTimes(1);
+    expect(onSkew).toHaveBeenCalledWith(SKEW);
+  });
+
+  it('says nothing when the versions match', async () => {
+    const stub = await stubServer(() => ok([]));
+    runFile(stub.port);
+    const onSkew = vi.fn();
+    await createApiClient(paths, { version: '0.1.0', onSkew }).get('/api/sources');
+    expect(onSkew).not.toHaveBeenCalled();
+  });
+
+  it('gives the restart message instead of "No such route" from an older server', async () => {
+    const stub = await stubServer(() => ({ status: 404, body: JSON.stringify({ error: { code: 'not_found', message: 'No such route.' } }) }));
+    runFile(stub.port);
+    const err = (await createApiClient(paths, { version: '0.2.1' }).get('/api/new-thing').catch((e: unknown) => e)) as LurkdError;
+    expect(err).toBeInstanceOf(LurkdError);
+    expect(err.code).toBe('server_unavailable');
+    expect(err.message).toBe(SKEW);
+  });
+
+  it('keeps "No such route" when the versions match, and any other not_found as it is', async () => {
+    const stub = await stubServer((s) =>
+      s.url === '/gone'
+        ? { status: 404, body: JSON.stringify({ error: { code: 'not_found', message: 'No such route.' } }) }
+        : { status: 404, body: JSON.stringify({ error: { code: 'not_found', message: 'No thread has the id 3.' } }) },
+    );
+    runFile(stub.port);
+    expect(await createApiClient(paths, { version: '0.1.0' }).get('/gone').catch((e: unknown) => e)).toMatchObject({ code: 'not_found', message: 'No such route.' });
+    expect(await createApiClient(paths, { version: '0.2.1' }).get('/x').catch((e: unknown) => e)).toMatchObject({ code: 'not_found', message: 'No thread has the id 3.' });
   });
 });

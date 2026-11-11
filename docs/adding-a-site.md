@@ -40,8 +40,8 @@ For a forum on another engine, the agent drafts selectors.
 
 1. Ask your agent to add the site and give it a thread address on that site.
 2. The agent calls `source.sample`. It receives the page's tags, classes and ids with no text. For a host that has no source yet, lurkd asks you to open the page first: use the entry under "Sites waiting for a sample" on the lurkd page, then the agent calls again. This way lurkd never loads an address an agent picked on its own.
-3. From that the agent writes a YAML source with CSS selectors and submits it through the same tool, with `source.sample` and `draft_yaml`, which on the command line is `lurkd sample <url> --draft file`.
-4. The draft appears under "Drafts to approve". The page shows its domains and any read endpoints. Press "Approve" only if they look right. Until you do, the source stays off.
+3. From that the agent writes a YAML source with CSS selectors and submits it through the same tool, with `source.sample` and `draft_yaml`, which on the command line is `lurkd sample <url> --draft file`. lurkd holds the draft's `base_url`, `domains`, `login_url`, `signup_url`, `search_url`, `session_check.url` and `automation.rule_url` to the address rules of "Add a forum": https only, no host on your own machine or network, no user name or password, no Reddit. It also looks up the host of `base_url` and every entry of `domains` in DNS, and refuses a name that resolves to an address on your own machine or network. A draft that breaks one of these rules is refused, and the error names the field.
+4. The draft appears under "Drafts to approve". The page shows its domains and any read endpoints. Press "Approve" only if they look right. Until you do, the source stays off. "Approve" runs the same checks again, DNS lookup included, so a draft saved by an earlier version of lurkd is refused on approval if its addresses break the rules.
 
 A source file holds no code. Existing files in the repository's `sources/` folder show the fields, and `src/sources/schema.ts` in the repository is the reference. That file is not part of the installed package. Sources you add yourself live in `~/.lurkd/sources/`.
 

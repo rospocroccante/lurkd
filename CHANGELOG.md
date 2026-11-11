@@ -2,6 +2,27 @@
 
 All notable changes to lurkd, newest first.
 
+## 0.2.1 (2026-11-11)
+
+### Added
+
+- A daily update check. The server asks `https://registry.npmjs.org/lurkd/latest` at most once every 24 hours, with a direct request that carries no cookie or token and the user agent `lurkd/<version>`, and keeps the answer in the archive. A newer stable version shows as a banner on the page (dismissed per version; the archive keeps the dismissal across restarts), as an "Update:" line and an `update` field in `lurkd status`, and as one stderr line after other CLI commands. It never shows in `--json` output or in MCP tool answers. Turn it off with "Check for new versions" under "Settings" or with `LURKD_NO_UPDATE_CHECK=1`.
+- `lurkd update [--yes]`. It asks first, stops the server, writes a consistent copy of the archive to `~/.lurkd/backups/archive-<version>-<UTC time>.db` through SQLite, runs `npm i -g lurkd@<latest>`, checks the result with `lurkd --version` and prints how to go back, with the paths quoted for the shell and the archive's `-wal` and `-shm` files removed before the copy goes back. It changes nothing on a clone (an `npm link` included), an npx run or a global folder your user cannot write to, and prints the command to run instead. It asks the registry even when the daily check is off, since you run it on purpose. No server route and no MCP tool runs npm.
+- `GET /api/update`, which the CLI reads for its stderr line, and `POST /api/update/dismiss`, which only the page can call.
+
+### Changed
+
+- A command or the MCP server that reaches a server of another lurkd version says so once. When the server is older, the advice is `lurkd stop`, then `lurkd start`. When the server is newer, which is the usual case after an update, the advice is to restart the agent session (for `lurkd mcp`) or to run the new `lurkd`. A route the server lacks answers with that line instead of "No such route", and the CLI prints the line once. The MCP server puts it before its first tool answer. At the end, `lurkd update` asks you to restart your agent sessions.
+- Addresses in the error messages agents see are printed as quoted data: the rules page of a source, an address a forum chose, and addresses cut to their origin and path. Characters that could end the quotes or the line are percent-encoded.
+- The archive stays at schema version 6: the update check keeps its data in the existing settings table. lurkd 0.2.0 opens an archive that 0.2.1 has used, so going back from 0.2.1 to 0.2.0 needs no backup. Going back to 0.1.0 still does, and `lurkd update` makes one before every install.
+- The guide covers updating, the backup folder and the `npx -y lurkd@latest mcp` route with its risks, and lists the npm registry among the hosts lurkd contacts.
+
+### Fixed
+
+- A draft an agent submits with `source.sample` and `draft_yaml` now follows the address rules of "Add a forum" for `base_url`, `domains`, `login_url`, `signup_url`, `search_url`, `session_check.url` and `automation.rule_url`: https only, no host on your own machine or network, no user name or password, no Reddit. Before the draft is stored, lurkd looks up the host of `base_url` and every domain, and refuses a name that resolves to a private address or does not resolve. The page's own "Add a forum" drafts follow the same checks.
+- "Approve" runs the same address rules and lookups again before it writes the source, so a draft saved by an earlier version is refused if its addresses break them.
+- An address with a quote mark in it is printed in error messages as one quoted value, with the quote mark percent-encoded, never as two quoted values side by side.
+
 ## 0.2.0 (2026-11-11)
 
 ### Added

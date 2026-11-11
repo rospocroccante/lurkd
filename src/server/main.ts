@@ -15,6 +15,7 @@ import { ensureHome, lurkdPaths, PACKAGE_ROOT, VERSION, type LurkdPaths } from '
 import { HostPacer } from '../policy/limiter.js';
 import { AddRequestStore, DraftStore, ForbiddenLog, SampleStore } from '../sources/drafts.js';
 import { Registry } from '../sources/registry.js';
+import { fetchLatestVersion, UpdateChecker, UpdateStore, type RegistryFetch } from '../update/check.js';
 import { createApp, retentionDays } from './app.js';
 
 // The server process: one archive, one registry, one headless browser, one queue and one pacer
@@ -66,6 +67,12 @@ export async function startServer(opts: {
    * The process entry point below never passes it, and nothing reads it from the environment.
    */
   allowLoopbackForTests?: boolean;
+  /**
+   * D53: the daily registry check. `fetch` replaces the request to registry.npmjs.org (tests pass
+   * one, so no test reaches the registry); `env` is read for LURKD_NO_UPDATE_CHECK (default
+   * process.env); `firstDelayMs` shortens the wait before the first look.
+   */
+  updateCheck?: { fetch?: RegistryFetch; env?: NodeJS.ProcessEnv; now?: () => number; firstDelayMs?: number };
 }): Promise<StartedServer> {
   const { paths } = opts;
   ensureHome(paths);
@@ -74,6 +81,7 @@ export async function startServer(opts: {
   // Hoisted so a failure after serve() can release the port and the timer too.
   let server: http.Server | null = null;
   let timer: NodeJS.Timeout | null = null;
+  let checker: UpdateChecker | null = null;
   try {
     const salt = getSalt(db);
     const state = new StateStore(db);
@@ -93,6 +101,16 @@ export async function startServer(opts: {
     const allowLoopbackForTests = opts.allowLoopbackForTests === true;
     const service = new FetchService({ registry, state, threads, samples, drafts, browser: b, queue, pacer: new HostPacer(), salt, allowLoopbackForTests });
     const token = crypto.randomBytes(32).toString('hex');
+    const uc = opts.updateCheck ?? {};
+    const updates = new UpdateStore(db, { version: VERSION, env: uc.env ?? process.env });
+    const registryFetch = uc.fetch;
+    checker = new UpdateChecker({
+      store: updates,
+      fetchLatest: () => fetchLatestVersion({ version: VERSION, ...(registryFetch ? { fetch: registryFetch } : {}) }),
+      ...(uc.now ? { now: uc.now } : {}),
+      ...(uc.firstDelayMs !== undefined ? { firstDelayMs: uc.firstDelayMs } : {}),
+    });
+    const updateChecker = checker;
 
     let port = 0;
     let closing: Promise<void> | null = null;
@@ -100,6 +118,7 @@ export async function startServer(opts: {
     const close = (): Promise<void> => {
       closing ??= (async () => {
         if (timer) clearInterval(timer);
+        updateChecker.stop();
         const srv = server;
         const listening = srv ? new Promise<void>((resolve) => srv.close(() => resolve())) : Promise.resolve();
         srv?.closeIdleConnections();
@@ -136,6 +155,10 @@ export async function startServer(opts: {
       uiDir: opts.uiDir ?? path.join(PACKAGE_ROOT, 'ui'),
       shutdown: () => void close(),
       allowLoopbackForTests,
+      updates,
+      onUpdateCheckChanged: (on) => {
+        if (on) updateChecker.nudge();
+      },
     });
 
     server = await new Promise<http.Server>((resolve, reject) => {
@@ -155,11 +178,14 @@ export async function startServer(opts: {
       }
     }, RETENTION_EVERY_MS);
     timer.unref();
+    // D53: never throws, and does nothing while the check is off.
+    updateChecker.start();
 
     writeRunFile(paths, { pid: process.pid, port, token, version: VERSION, startedAt: new Date().toISOString() });
     return { port, token, url: `http://127.0.0.1:${port}/`, close };
   } catch (e) {
     if (timer) clearInterval(timer);
+    checker?.stop();
     const srv = server as http.Server | null;
     if (srv) {
       const listening = new Promise<void>((resolve) => srv.close(() => resolve()));

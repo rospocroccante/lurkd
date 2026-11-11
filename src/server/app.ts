@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -16,10 +17,12 @@ import { MAX_IMPORT_BYTES, redditThreadId, redditUnsupported } from '../extract/
 import { parseFetchRequest, type FetchService } from '../fetch/service.js';
 import { quotedName } from '../output/quoted.js';
 import { isRedditHost } from '../policy/urls.js';
-import { analysableUrl, parseAddDraft, type AddDraftOut, type AddOut } from '../sources/analyse.js';
+import { analysableUrl, draftAddressErrors, draftResolveErrors, parseAddDraft, type AddDraftOut, type AddOut, type ResolveHost } from '../sources/analyse.js';
 import { draftRefused, type AddRequestStore, type DraftStore, type ForbiddenLog, type SampleStore } from '../sources/drafts.js';
 import { GroupStore, planBulkEnable, withoutHiddenFormat, type BulkPlan } from '../sources/groups.js';
 import type { Registry, SourceView } from '../sources/registry.js';
+import { UpdateStore } from '../update/check.js';
+import { parseStableVersion } from '../update/version.js';
 import { captureSample, finishHandoff, startLoginHandoff, startSampleHandoff, startSignupHandoff } from './handoff.js';
 
 // The local HTTP server (D3). Every route checks the Host header (DNS rebinding), the Origin
@@ -66,6 +69,12 @@ export interface AppDeps {
   groups?: GroupStore;
   /** The clock of the bulk acknowledgment lists and of the one-time page links; tests set it. */
   now?: () => number;
+  /** D53: what the archive holds about the update check; by default a store on `db`. */
+  updates?: UpdateStore;
+  /** D53: the page switched "Check for new versions"; the server looks again soon when it is on. */
+  onUpdateCheckChanged?: (on: boolean) => void;
+  /** M3: resolves the names of a form draft before it is stored (default node:dns `lookup`); tests pass their own. */
+  resolveHost?: ResolveHost;
 }
 
 type Env = { Variables: { cookieOk: boolean; bearerOk: boolean } };
@@ -249,6 +258,15 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const pageOk = (candidate: string | undefined): boolean => candidate !== undefined && crypto.timingSafeEqual(sha256(candidate), pageHash);
   const groups = deps.groups ?? new GroupStore(deps.db);
   const now = deps.now ?? Date.now;
+  const updates = deps.updates ?? new UpdateStore(deps.db, { version: deps.version });
+  const updateCheck = () => ({ on: updates.enabled(), offByEnv: updates.offByEnv });
+  // 0.2.1: the form's drafts follow the address rules an agent's draft follows (source.sample).
+  const addressRules = { allowLoopback: deps.allowLoopbackForTests === true };
+  const addressErrors = (s: Parameters<typeof draftAddressErrors>[0]) => draftAddressErrors(s, addressRules);
+  // M3: and the DNS half, for the base host and every domain, before the draft is stored.
+  const resolveHost: ResolveHost = deps.resolveHost ?? ((host) => lookup(host, { all: true }));
+  const resolveErrors = (s: Parameters<typeof draftResolveErrors>[0]) => draftResolveErrors(s, resolveHost, addressRules);
+  const submitDraft = (yaml: string, host: string) => deps.drafts.submitResolved(yaml, host, { addressErrors, resolveErrors });
   // D52: the one-time page links waiting to be opened, by the SHA-256 of the nonce (the nonce
   // itself is kept nowhere), oldest first, each with the time it stops working.
   const pageLinks = new Map<string, number>();
@@ -380,8 +398,14 @@ export function createApp(deps: AppDeps): Hono<Env> {
       browser: { state: deps.browser.state, lastError: deps.browser.lastError },
       queueLength,
       attention,
+      // D53: a newer lurkd, or null (none known, or the check is off).
+      update: updates.info(),
     });
   });
+
+  // D53: the newer version the server knows of, for the one stderr line the CLI prints after a
+  // command. It makes no request: the server checks the registry on its own schedule.
+  app.get('/api/update', (c) => c.json({ update: updates.info() }));
 
   // D51: `group` keeps the sources of one of the user's groups, by its name. The agent can read a
   // group this way; making or changing one is for the page only.
@@ -527,6 +551,12 @@ export function createApp(deps: AppDeps): Hono<Env> {
       registryErrors: deps.registry.errors(),
       retentionDays: retentionDays(deps.db),
       cookieNotice: COOKIE_NOTICE,
+      // D53: the banner shows `update` when it is not null; `updateCheck` is the settings switch.
+      update: updates.info(),
+      updateCheck: updateCheck(),
+      // M2: the version whose banner the user dismissed, kept in the archive so a restarted
+      // server (on another port, so another origin and other browser storage) still knows it.
+      updateDismissed: updates.dismissed(),
     });
   });
 
@@ -609,7 +639,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
       deps.addRequests.remove(draft.host);
       return c.json({ status: 'known', host: draft.host, sourceId: known.id } satisfies AddDraftOut);
     }
-    const r = deps.drafts.submit(draft.yaml, draft.host);
+    const r = await submitDraft(draft.yaml, draft.host);
     if (!r.ok) throw draftRefused(r.errors);
     deps.addRequests.remove(draft.host);
     return c.json({ status: 'draft_saved', host: draft.host, draftId: r.draft.id, sourceId: r.draft.sourceId, warnings: r.draft.warnings } satisfies AddDraftOut);
@@ -646,7 +676,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
       deps.addRequests.remove(draft.host);
       return c.json({ status: 'known', host: draft.host, sourceId: known.id } satisfies AddDraftOut);
     }
-    const r = deps.drafts.submit(draft.yaml, draft.host);
+    const r = await submitDraft(draft.yaml, draft.host);
     if (!r.ok) throw draftRefused(r.errors);
     deps.forbidden.remove(entry.host);
     deps.addRequests.remove(draft.host);
@@ -660,8 +690,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json({ dismissed: host });
   });
 
-  app.post('/api/drafts/:id/approve', page, (c) => {
-    const source = deps.drafts.approve(idParam(c.req.param('id'), 'id'));
+  // 0.2.1: approval holds a draft to the same address rules and DNS check as a new one, so a
+  // draft stored by 0.2.0, before those rules, cannot bring a private or Reddit address in.
+  app.post('/api/drafts/:id/approve', page, async (c) => {
+    const source = await deps.drafts.approve(idParam(c.req.param('id'), 'id'), { addressErrors, resolveErrors });
     return c.json({ source: deps.registry.view(source.id) });
   });
 
@@ -802,6 +834,22 @@ export function createApp(deps: AppDeps): Hono<Env> {
     setSetting(deps.db, 'retention_days', value === null ? null : String(value));
     const deleted = deps.threads.applyRetention(value, new Date().toISOString());
     return c.json({ retentionDays: value, deleted });
+  });
+
+  // D53 "Check for new versions". With LURKD_NO_UPDATE_CHECK=1 the switch is stored but the check stays off.
+  app.post('/api/settings/update-check', page, async (c) => {
+    const on = boolField(await jsonBody(c), 'enabled');
+    updates.setUserEnabled(on);
+    deps.onUpdateCheckChanged?.(on);
+    return c.json({ updateCheck: updateCheck() });
+  });
+
+  // M2: "Dismiss" on the update banner, for one plain version, from the page only.
+  app.post('/api/update/dismiss', page, async (c) => {
+    const version = (await jsonBody(c)).version;
+    if (parseStableVersion(version) === null) throw invalid('version must be a plain version such as 0.3.0.', { field: 'version' });
+    updates.setDismissed(version as string);
+    return c.json({ updateDismissed: version });
   });
 
   return app;

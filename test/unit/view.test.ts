@@ -46,6 +46,7 @@ import {
   IMPORT_MAX_BYTES,
   isSwitchable,
   selectionState,
+  updateBanner,
 } from '../../ui/view.js';
 
 const v: SourceView = {
@@ -808,3 +809,22 @@ describe('importResultView and checkImportFile (C1, D50)', () => {
     expect(checkImportFile({ size: IMPORT_MAX_BYTES })).toBe(null);
   });
 });
+
+// D53: the banner for a newer lurkd, dismissed per version in the browser only.
+describe('updateBanner', () => {
+  const update = { current: '0.2.1', latest: '0.3.0', checkedAt: '2026-11-11T09:00:00.000Z' };
+
+  it('words the newer version and the command', () => {
+    expect(updateBanner(update, null)).toEqual({ version: '0.3.0', text: 'lurkd 0.3.0 is available. Run lurkd update in a terminal to install it.' });
+  });
+
+  it('stays hidden with no update, for a dismissed version, and for a version that is not a plain semver', () => {
+    expect(updateBanner(null, null)).toBeNull();
+    expect(updateBanner(undefined, null)).toBeNull();
+    expect(updateBanner(update, '0.3.0')).toBeNull();
+    expect(updateBanner({ ...update, latest: '0.3.0 <b>' }, null)).toBeNull();
+    // A dismissal of an older version does not hide a newer one.
+    expect(updateBanner({ ...update, latest: '0.4.0' }, '0.3.0')).not.toBeNull();
+  });
+});
+

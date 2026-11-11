@@ -723,6 +723,74 @@ describe('FetchService', () => {
     }
   });
 
+  // 0.2.1, carried from the 0.2.0 review: a draft from source.sample follows the address rules of "Add a forum".
+  it('refuses a draft whose addresses break the rules of Add a forum, naming the field and never the address', async () => {
+    const draft = (host: string, extra: Record<string, unknown>) =>
+      sourceYaml('kappa', host, { engine: 'custom', selectors: { post: 'article', author: '.name', body: '.body' }, ...extra });
+    const cases: [string, string, Record<string, unknown>, string][] = [
+      ['192.168.1.20', 'https://192.168.1.20/t/1', {}, 'base_url'],
+      ['nas.local', 'https://nas.local/t/1', {}, 'base_url'],
+      // The schema wants every address on a listed domain, so the hosts are listed too.
+      ['kappa.example', 'https://kappa.example/t/1', { domains: ['kappa.example', '10.0.0.7'], login_url: 'https://10.0.0.7/login' }, 'login_url'],
+      ['kappa.example', 'https://kappa.example/t/1', { domains: ['kappa.example', 'router.lan'], signup_url: 'https://router.lan/join' }, 'signup_url'],
+      ['kappa.example', 'https://kappa.example/t/1', { search_url: 'https://user:secret@kappa.example/search?q={query}' }, 'search_url'],
+      ['kappa.example', 'https://kappa.example/t/1', { domains: ['kappa.example', 'printer.internal'] }, 'domains'],
+      ['kappa.example', 'https://kappa.example/t/1', { domains: ['kappa.example', '127.0.0.1'], login_url: 'http://127.0.0.1:4100/login' }, 'login_url'],
+    ];
+    for (const [host, url, extra, field] of cases) {
+      const e = (await svc.sample(url, draft(host, extra)).catch((x: unknown) => x)) as LurkdError;
+      expect(e, `${field} ${JSON.stringify(extra)}`).toBeInstanceOf(LurkdError);
+      expect(e.code).toBe('invalid_request');
+      const errors = (e.details as { errors: string[] }).errors;
+      expect(errors.some((l) => l.includes(field)), `${field}: ${errors.join(' | ')}`).toBe(true);
+      expect(e.message).not.toMatch(/secret|10\.0\.0\.7|router\.lan|printer\.internal/);
+    }
+    expect(drafts.list('pending')).toEqual([]);
+    // The same draft on a public host passes.
+    expect(await svc.sample('https://kappa.example/t/1', draft('kappa.example', {}))).toMatchObject({ status: 'draft_saved' });
+  });
+
+  // M3: a draft's base host and every domain must resolve to public addresses before it is stored.
+  it('refuses a sampled draft whose names resolve to private addresses, before it is stored', async () => {
+    const yaml = sourceYaml('kappa', 'kappa.example', { engine: 'custom', selectors: { post: 'article', author: '.name', body: '.body' } });
+    resolveHost.mockImplementation(async (host: string) => [{ address: host === 'kappa.example' ? '192.168.1.5' : '93.184.215.14', family: 4 }]);
+    const e = (await svc.sample('https://kappa.example/t/1', yaml).catch((x: unknown) => x)) as LurkdError;
+    expect(e).toBeInstanceOf(LurkdError);
+    expect(e.code).toBe('invalid_request');
+    expect((e.details as { errors: string[] }).errors).toEqual([
+      'kappa.yaml: base_url: lurkd opens public forums only, not addresses on your own network.',
+      'kappa.yaml: domains: lurkd opens public forums only, not addresses on your own network.',
+    ]);
+    expect(resolveHost.mock.calls.map((c) => c[0])).toContain('kappa.example');
+    expect(drafts.list('pending')).toEqual([]);
+    resolveHost.mockImplementation(async () => [{ address: '93.184.215.14', family: 4 }]);
+    expect(await svc.sample('https://kappa.example/t/1', yaml)).toMatchObject({ status: 'draft_saved' });
+  });
+
+  it('lets loopback addresses into a sampled draft only with allowLoopbackForTests', async () => {
+    const tests = new FetchService({
+      registry,
+      state,
+      threads,
+      samples,
+      drafts,
+      browser: browser as unknown as BrowserManager,
+      queue,
+      pacer: new HostPacer(),
+      salt: SALT,
+      clock,
+      adapterFor: () => adapter,
+      resolveHost,
+      allowLoopbackForTests: true,
+    });
+    const yaml = YAML.stringify({
+      ...YAML.parse(sourceYaml('loop', '127.0.0.1', { engine: 'custom', selectors: { post: 'article', author: '.name', body: '.body' } })),
+      base_url: 'http://127.0.0.1:4100',
+    });
+    expect(await tests.sample('http://127.0.0.1:4100/t/1', yaml)).toMatchObject({ status: 'draft_saved' });
+    await expect(svc.sample('http://127.0.0.1:4100/t/1', yaml)).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
   it('searches the archive with the name mode of the source and the stored signals (C6)', async () => {
     adapter.threads.set(BIG_URL, thread(BIG_URL, [post(1, 'alice', `Ask ${markName('bob')} about the firmware reset trick.`, ['trust level 3'])]));
     await fetchUrl();

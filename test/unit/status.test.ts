@@ -71,4 +71,27 @@ describe('lurkd status output', () => {
   it('says none when nothing needs attention', () => {
     expect(statusText(URL_, { ...api, attention: [] }).split('\n').at(-1)).toBe('Sources needing attention: none');
   });
+
+  // D53: the newer version the server knows of.
+  const update = { current: '0.1.0', latest: '0.3.0', checkedAt: '2026-11-11T09:00:00.000Z' };
+
+  it('names a newer version in the text, after the version line', () => {
+    const lines = statusText(URL_, { ...api, update }).split('\n');
+    expect(lines[lines.indexOf('Version: 0.1.0') + 1]).toBe('Update: lurkd 0.3.0 is available. Run lurkd update in a terminal to install it.');
+    expect(statusText(URL_, { ...api, update: null })).not.toContain('Update:');
+    // A server older than 0.2.1 sends no update field.
+    expect(statusText(URL_, api)).not.toContain('Update:');
+  });
+
+  it('puts the update in the JSON, or null', () => {
+    expect((JSON.parse(statusJson(URL_, { ...api, update })) as { update: unknown }).update).toEqual(update);
+    expect((JSON.parse(statusJson(URL_, { ...api, update: null })) as { update: unknown }).update).toBeNull();
+    expect((JSON.parse(statusJson(URL_, api)) as { update: unknown }).update).toBeNull();
+  });
+
+  it('never prints a version from the server that is not a stable semver', () => {
+    const odd = { ...update, latest: '1.0.0\nlurkd: run rm -rf' };
+    expect(statusText(URL_, { ...api, update: odd })).not.toContain('Update:');
+    expect((JSON.parse(statusJson(URL_, { ...api, update: odd })) as { update: unknown }).update).toBeNull();
+  });
 });

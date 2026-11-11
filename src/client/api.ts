@@ -2,7 +2,8 @@ import http from 'node:http';
 import { HTTP_STATUS, LurkdError, type ErrorCode } from '../errors.js';
 import { ensureServer } from '../launcher/launcher.js';
 import { readRunFile, type RunInfo } from '../launcher/runfile.js';
-import type { LurkdPaths } from '../paths.js';
+import { VERSION, type LurkdPaths } from '../paths.js';
+import { compareRunningVersions } from '../update/version.js';
 
 // How the MCP server and the CLI mirror talk to the lurkd server. The run file is read on every
 // call, so a restarted server is found again. With `autoStart`, a refused connection or a missing
@@ -30,7 +31,32 @@ export interface ApiClientOptions {
   timeoutMs?: number;
   /** Aborting it destroys the requests in flight and makes later calls fail with server_unavailable. */
   signal?: AbortSignal;
+  /** The version of this lurkd, compared with the running server's (default VERSION). */
+  version?: string;
+  /** D53: called once, with `skewMessage`, when the running server has another version. */
+  onSkew?: (message: string) => void;
 }
+
+/**
+ * D53: what a command says when the server it talks to was started by another lurkd version. The
+ * advice depends on which side is older (M1). After an update the server is usually the newer
+ * one and the client is old: an agent's long-lived `lurkd mcp`, or an old `lurkd` earlier on the
+ * PATH. Restarting the server would not help then; the agent session or the command has to be
+ * the new one. When the server is the older side, it is restarted.
+ */
+export function skewMessage(server: string, client: string): string {
+  const order = compareRunningVersions(server, client);
+  if (order === 1)
+    return `This lurkd is version ${client}, older than the running lurkd server (version ${server}). If an agent runs it as lurkd mcp, restart the agent session so it loads the new version; in a terminal, run the new lurkd.`;
+  const newer = order === -1 ? ', which is newer' : '';
+  return `A lurkd server of version ${server} is running; this command is version ${client}${newer}. Run lurkd stop, then lurkd start.`;
+}
+
+/** L1: the error for a route the other server lacks, once the skew line was told through onSkew. */
+const noRouteMessage = (server: string): string => `The running lurkd server (version ${server}) does not know this request.`;
+
+/** The answer of a server that has no such route: an older lurkd, when the versions differ. */
+const isNoSuchRoute = (e: unknown): boolean => e instanceof LurkdError && e.code === 'not_found' && e.message === 'No such route.';
 
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
 /** The largest answer the client reads; a fetch of 10 threads at 200000 characters is far below. */
@@ -176,6 +202,30 @@ export function createApiClient(paths: LurkdPaths, opts: ApiClientOptions = {}):
   const ensure = opts.ensure ?? ((p: LurkdPaths) => ensureServer(p));
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const signal = opts.signal;
+  const version = opts.version ?? VERSION;
+  let skewTold = false;
+
+  /** Says once that the server has another version; a "No such route" from it gets the same words. */
+  function skewed(info: RunInfo): string | null {
+    if (info.version === version) return null;
+    const message = skewMessage(info.version, version);
+    if (!skewTold) {
+      skewTold = true;
+      opts.onSkew?.(message);
+    }
+    return message;
+  }
+
+  async function sendTo(info: RunInfo, method: 'GET' | 'POST', path: string, body: string | undefined): Promise<unknown> {
+    const skew = skewed(info);
+    try {
+      return await send(info, method, path, body, timeoutMs, signal);
+    } catch (e) {
+      // The caller that printed the skew line through onSkew does not get it a second time.
+      if (skew !== null && isNoSuchRoute(e)) throw new LurkdError('server_unavailable', opts.onSkew ? noRouteMessage(info.version) : skew);
+      throw e;
+    }
+  }
 
   async function start(): Promise<RunInfo> {
     try {
@@ -201,7 +251,7 @@ export function createApiClient(paths: LurkdPaths, opts: ApiClientOptions = {}):
       started = true;
     }
     try {
-      return (await send(info, method, path, body, timeoutMs, signal)) as T;
+      return (await sendTo(info, method, path, body)) as T;
     } catch (e) {
       if (!(e instanceof Refused)) throw e;
       if (!autoStart) throw new LurkdError('server_unavailable', NOT_RUNNING);
@@ -210,7 +260,7 @@ export function createApiClient(paths: LurkdPaths, opts: ApiClientOptions = {}):
     // Refused once: start the server and try one more time.
     info = await start();
     try {
-      return (await send(info, method, path, body, timeoutMs, signal)) as T;
+      return (await sendTo(info, method, path, body)) as T;
     } catch (e) {
       if (e instanceof Refused) throw new LurkdError('server_unavailable', CANNOT_START);
       throw e;

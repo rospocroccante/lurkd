@@ -74,4 +74,4 @@ Switching off a group or a selection switches every source in it off, with no di
 
 ## Settings
 
-The "Settings" section at the bottom is folded by default. It holds "Keep archived threads" (everything, 30, 90 or 365 days) and the note on cookies and your browser profile.
+The "Settings" section at the bottom is folded by default. It holds "Keep archived threads" (everything, 30, 90 or 365 days), "Check for new versions" and the note on cookies and your browser profile. "Check for new versions" is on by default: once a day the server asks the npm registry for the latest version number, and a newer lurkd shows as a banner at the top of the page with the command to run, `lurkd update`. "Dismiss" hides the banner for that version. The server keeps the dismissed version in the archive, so the banner stays hidden after a restart and in any browser. With `LURKD_NO_UPDATE_CHECK=1` in the environment that started lurkd, the switch is greyed out and the check stays off.

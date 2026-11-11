@@ -4,7 +4,7 @@ import { parseDocument } from 'yaml';
 import type { SourceOverride, StateStore, StoredSessionState } from '../archive/state.js';
 import { LurkdError } from '../errors.js';
 import { redditUnsupported } from '../extract/reddit-import.js';
-import { quotedName, quotedSentence } from '../output/quoted.js';
+import { quotedName, quotedSentence, quotedUrl } from '../output/quoted.js';
 import type { Engine } from '../types.js';
 import { BUILTIN_SOURCES, isImportOnly } from './builtin.js';
 import { parseSource, type SourceConfig } from './schema.js';
@@ -285,7 +285,7 @@ export class Registry {
       if (s.automation.policy === 'forbidden')
         throw new LurkdError(
           'disabled',
-          `${quotedName(s.name)} is switched off because its rules forbid automated access: ${quotedSentence(s.automation.rule_quote ?? '')} (${s.automation.rule_url}). Switch it on from the lurkd page if you accept that.`,
+          `${quotedName(s.name)} is switched off because its rules forbid automated access: ${quotedSentence(s.automation.rule_quote ?? '')} (${quotedUrl(s.automation.rule_url)}). Switch it on from the lurkd page if you accept that.`,
           details,
         );
       throw new LurkdError('disabled', `${quotedName(s.name)} is switched off. Switch it on from the lurkd page.`, details);
@@ -323,7 +323,7 @@ export class Registry {
         ack === 'stale'
           ? staleReason(s)
           : s.automation.policy === 'forbidden'
-            ? `The rules of ${quotedName(s.name)} forbid automated access: ${quotedSentence(s.automation.rule_quote ?? '')} (${s.automation.rule_url}).`
+            ? `The rules of ${quotedName(s.name)} forbid automated access: ${quotedSentence(s.automation.rule_quote ?? '')} (${quotedUrl(s.automation.rule_url)}).`
             : `${quotedName(s.name)} has not been acknowledged yet.`;
       throw new LurkdError('needs_acknowledgment', `${why} Read the warning for this source and acknowledge it to switch it on.`, {
         sourceId: id,
@@ -448,8 +448,8 @@ function acknowledgment(policy: SourceConfig['automation']['policy'], o: SourceO
 function staleReason(s: SourceConfig): string {
   const { policy, rule_quote, rule_url } = s.automation;
   return policy === 'forbidden'
-    ? `${quotedName(s.name)} changed its rules after you acknowledged them, and they now forbid automated access: ${quotedSentence(rule_quote ?? '')} (${rule_url}).`
-    : `${quotedName(s.name)} changed its rules after you acknowledged them, and lurkd no longer knows whether they allow automated access (${rule_url}).`;
+    ? `${quotedName(s.name)} changed its rules after you acknowledged them, and they now forbid automated access: ${quotedSentence(rule_quote ?? '')} (${quotedUrl(rule_url)}).`
+    : `${quotedName(s.name)} changed its rules after you acknowledged them, and lurkd no longer knows whether they allow automated access (${quotedUrl(rule_url)}).`;
 }
 
 /** The `id` the YAML declares, or null when the text does not parse or has no string id. */

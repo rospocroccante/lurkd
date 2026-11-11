@@ -118,7 +118,7 @@ describe('FetchQueue', () => {
     await expect(q.run({ sourceId: 'b', kind: 'fetch' }, async () => { throw new LurkdError('timeout', 'http://f.example did not load within 45 s.'); })).rejects.toThrow();
     const [a, b] = q.snapshot();
     expect(a!.message).not.toContain('IGNORE');
-    expect(b!.message).toMatch(/^Error timeout: http:\/\/f\.example did not load within 45 s\./);
+    expect(b!.message).toMatch(/^Error timeout: "http:\/\/f\.example" did not load within 45 s\./);
   });
 
   it('keeps the state stopped and the message a task sets', async () => {

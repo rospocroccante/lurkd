@@ -1,5 +1,7 @@
 import type { SessionStatusOut } from '../fetch/service.js';
 import { quotedName } from '../output/quoted.js';
+import type { UpdateInfo } from '../update/check.js';
+import { parseStableVersion } from '../update/version.js';
 
 // What `lurkd status` prints. The sources needing attention are projected to their id, name and
 // state: the login URL and the URL of the last block are forum addresses, and status output goes
@@ -11,6 +13,16 @@ export interface ApiStatus {
   browser: { state: string; lastError: string | null };
   queueLength: number;
   attention: SessionStatusOut[];
+  /** D53: a newer lurkd the server knows of; absent from servers older than 0.2.1. */
+  update?: UpdateInfo | null;
+}
+
+/** The update the server named, when its versions are stable semvers; null otherwise. */
+function updateOf(s: ApiStatus): UpdateInfo | null {
+  const u = s.update;
+  if (u === undefined || u === null || typeof u !== 'object') return null;
+  if (parseStableVersion(u.latest) === null || typeof u.current !== 'string' || typeof u.checkedAt !== 'string') return null;
+  return { current: u.current, latest: u.latest, checkedAt: u.checkedAt };
 }
 
 export interface AttentionEntry {
@@ -40,6 +52,7 @@ export function statusJson(url: string, s: ApiStatus): string {
     browserError: s.browser.lastError,
     queueLength: s.queueLength,
     attention: s.attention.map(attentionEntry),
+    update: updateOf(s),
   });
 }
 
@@ -58,9 +71,13 @@ export function statusText(url: string, s: ApiStatus): string {
     `Page: ${url} (run lurkd open: it opens the page with a link that works once)`,
     `PID: ${s.pid}`,
     `Version: ${s.version}`,
+  ];
+  const update = updateOf(s);
+  if (update !== null) lines.push(`Update: lurkd ${update.latest} is available. Run lurkd update in a terminal to install it.`);
+  lines.push(
     `Browser: ${s.browser.state}${s.browser.lastError ? ` (${s.browser.lastError})` : ''}`,
     `Queue: ${s.queueLength}`,
-  ];
+  );
   const attention = s.attention.map(attentionEntry);
   if (attention.length === 0) lines.push('Sources needing attention: none');
   else lines.push('Sources needing attention:', ...attention.map(attentionLine));

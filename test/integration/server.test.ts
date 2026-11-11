@@ -32,7 +32,7 @@ function tempHome(): { paths: LurkdPaths; seedDir: string; uiDir: string } {
   return { paths: lurkdPaths({ LURKD_HOME: home }), seedDir, uiDir };
 }
 
-async function start(opts: { launch?: LaunchFn; allowLoopbackForTests?: boolean } = {}): Promise<{ s: Started; paths: LurkdPaths }> {
+async function start(opts: { launch?: LaunchFn; allowLoopbackForTests?: boolean; updateCheck?: Parameters<typeof startServer>[0]['updateCheck'] } = {}): Promise<{ s: Started; paths: LurkdPaths }> {
   const { paths, seedDir, uiDir } = tempHome();
   const s = await startServer({ paths, seedDir, uiDir, ...opts });
   running.push(s);
@@ -97,6 +97,53 @@ describe('startServer', () => {
     await expect(fetch(`http://127.0.0.1:${s.port}/health`)).rejects.toThrow();
     // A second close is a no-op.
     await s.close();
+  });
+
+  // D53: the registry request is injected; nothing here reaches registry.npmjs.org.
+  it('asks the registry shortly after start, stores the answer in the archive and reports a newer version', async () => {
+    const noBrowser: LaunchFn = async () => {
+      throw new Error('no browser here');
+    };
+    const seen: { url: string; headers: Record<string, string> }[] = [];
+    const registry = async (url: string, init: { headers: Record<string, string> }) => {
+      seen.push({ url, headers: init.headers });
+      return { status: 200, body: JSON.stringify({ name: 'lurkd', version: '99.0.0' }) };
+    };
+    const { s, paths } = await start({ launch: noBrowser, updateCheck: { fetch: registry, env: {}, firstDelayMs: 50 } });
+    const auth = { authorization: `Bearer ${s.token}` };
+    const deadline = Date.now() + 5000;
+    let update: unknown = null;
+    while (update === null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      update = ((await (await fetch(`http://127.0.0.1:${s.port}/api/update`, { headers: auth })).json()) as { update: unknown }).update;
+    }
+    expect(update).toMatchObject({ current: VERSION, latest: '99.0.0' });
+    expect(seen).toEqual([{ url: 'https://registry.npmjs.org/lurkd/latest', headers: { accept: 'application/json', 'user-agent': `lurkd/${VERSION}` } }]);
+    await s.close();
+    running.splice(running.indexOf(s), 1);
+    // A restart the same day reads the stored answer and asks nothing.
+    const again = await startServer({ paths, seedDir: path.join(paths.home, 'seed'), uiDir: path.join(paths.home, 'ui-files'), launch: noBrowser, updateCheck: { fetch: registry, env: {}, firstDelayMs: 50 } });
+    running.push(again);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen).toHaveLength(1);
+    const status = (await (await fetch(`http://127.0.0.1:${again.port}/api/status`, { headers: { authorization: `Bearer ${again.token}` } })).json()) as { update: unknown };
+    expect(status.update).toMatchObject({ latest: '99.0.0' });
+  });
+
+  it('asks nothing with LURKD_NO_UPDATE_CHECK=1', async () => {
+    const noBrowser: LaunchFn = async () => {
+      throw new Error('no browser here');
+    };
+    let calls = 0;
+    const registry = async () => {
+      calls++;
+      return { status: 200, body: '{"version":"99.0.0"}' };
+    };
+    const { s } = await start({ launch: noBrowser, updateCheck: { fetch: registry, env: { LURKD_NO_UPDATE_CHECK: '1' }, firstDelayMs: 20 } });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(calls).toBe(0);
+    const r = (await (await fetch(`http://127.0.0.1:${s.port}/api/update`, { headers: { authorization: `Bearer ${s.token}` } })).json()) as { update: unknown };
+    expect(r.update).toBeNull();
   });
 
   it('keeps serving when the browser cannot start', async () => {

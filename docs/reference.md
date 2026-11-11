@@ -2,7 +2,7 @@
 
 ## Status
 
-Version 0.2.0. The repository at github.com/rospocroccante/lurkd is public under the Apache-2.0 licence, and the package is published on npm as `lurkd`. The interfaces may still change between minor versions; [CHANGELOG.md](https://github.com/rospocroccante/lurkd/blob/main/CHANGELOG.md) lists what changed.
+Version 0.2.1. The repository at github.com/rospocroccante/lurkd is public under the Apache-2.0 licence, and the package is published on npm as `lurkd`. The interfaces may still change between minor versions; [CHANGELOG.md](https://github.com/rospocroccante/lurkd/blob/main/CHANGELOG.md) lists what changed.
 
 No legal review of lurkd has been done. Reading a forum with an automated tool may break that forum's rules, and using lurkd is your decision and your responsibility.
 
@@ -17,19 +17,21 @@ These limits hold for every version:
 - Its headless reading browser never contacts Reddit. You can import a thread you saved yourself.
 - It never opens a new host because an agent asked. An agent can queue one with `lurkd add`, and lurkd opens it when you press "Analyse". Reads on approved sources use the addresses agents give, inside that source's domains.
 - It has no bulk export, no dataset output and no search for an author across sources.
-- It has no account, no telemetry and no sync. Apart from requests to the forums you read or analyse and a one-off Chromium download from Playwright's CDN on the first start, nothing leaves your machine except the text you pass to your own agent.
+- It has no account, no telemetry and no sync. Apart from requests to the forums you read or analyse, a one-off Chromium download from Playwright's CDN on the first start and one request a day to the npm registry for the latest version number, nothing leaves your machine except the text you pass to your own agent. `LURKD_NO_UPDATE_CHECK=1`, or "Check for new versions" under "Settings" on the page, turns the daily request off.
+- It never updates itself. `lurkd update` installs a new version when you run it in a terminal, and no server route or MCP tool runs npm.
 
 ## Data on disk
 
 Everything is under `~/.lurkd/`, or under the folder named by `LURKD_HOME`, with mode 0700:
 
-- `archive.db`: the SQLite archive with threads (imported Reddit threads included), posts under real names, sessions, settings, the fetch log, drafts, the forums queued for "Add a forum", the log of forums that forbid automated access, and your groups.
+- `archive.db`: the SQLite archive with threads (imported Reddit threads included), posts under real names, sessions, settings, the fetch log, drafts, the forums queued for "Add a forum", the log of forums that forbid automated access, your groups, the result of the last update check, and the version whose update banner you dismissed.
+- `backups/`: copies of the archive that `lurkd update` makes before it installs a new version, named `archive-<old version>-<UTC time>.db`, mode 0600. lurkd never deletes them.
 - `profiles/default/`: the browser profile with your cookies.
 - `sources/`: sources you added.
 - `run/server.json`: process id, port and token of the running server. The CLI and the MCP server use the token; it never goes into an address your browser opens, because the page opens from a one-time link (`lurkd open`). The page's own secret lives in the server's memory only.
 - `logs/server.log`: the server log.
 
-The archive is at schema version 6 in lurkd 0.2.0 (0.1.0 wrote version 1). lurkd upgrades an older archive in place on its first start, in one transaction, and keeps everything in it. An older lurkd refuses to open a newer archive and does not start; its log says "archive schema version 6 is newer than this lurkd supports (1)". If you might go back to 0.1.0, run `lurkd stop` and copy `~/.lurkd/archive.db` before you upgrade, and put that copy back when you downgrade.
+The archive is at schema version 6 in lurkd 0.2.0 and 0.2.1 (0.1.0 wrote version 1). lurkd upgrades an older archive in place on its first start, in one transaction, and keeps everything in it. An older lurkd refuses to open a newer archive and does not start: 0.1.0's log says "archive schema version 6 is newer than this lurkd supports (1)". lurkd 0.2.0 and 0.2.1 share version 6, so you can go back from 0.2.1 to 0.2.0 without the backup. To go back to 0.1.0 you need the backup. `lurkd update` copies the archive to `~/.lurkd/backups/` first and prints how to put the copy back. For an install without `lurkd update`, run `lurkd stop` and copy `~/.lurkd/archive.db` before you upgrade, and put that copy back when you downgrade.
 
 ## Retention and deletion
 
@@ -52,6 +54,7 @@ Other limits in this version:
 | Sources in one bulk change | 500 |
 | One-time page link | 60 seconds, used once, at most 5 waiting |
 | Login or sign-up window | closes by itself after 15 minutes |
+| Update check | once a day, 5 s timeout, stable versions only |
 
 ## Seed sources
 

@@ -230,6 +230,22 @@ describe('formatError', () => {
     expect(out).not.toContain('f'.repeat(64));
   });
 
+  // 0.2.1: an address in a message is quoted as data.
+  it('quotes the addresses in the message: a rules page, a redirect target, a redacted address', () => {
+    expect(formatError(new LurkdError('disabled', '"Beta" is switched off because its rules forbid automated access: "No bots." ("https://beta.example/terms").', { sourceId: 'beta' }))).toBe(
+      'Error disabled: "Beta" is switched off because its rules forbid automated access: "No bots." ("https://beta.example/terms"). Ask the user whether they want beta switched on in the lurkd page. Do not retry until they say it is done.',
+    );
+    expect(formatError(new LurkdError('off_domain', '"Forum" redirected to https://evil.example, which is not on a domain of a.'))).toBe(
+      'Error off_domain: "Forum" redirected to "https://evil.example", which is not on a domain of a.',
+    );
+    expect(formatError(new LurkdError('timeout', 'https://forum.example/t/x/1 did not load within 45 s.'))).toBe('Error timeout: "https://forum.example/t/x/1" did not load within 45 s.');
+  });
+
+  it('quotes the address in a stop line too', () => {
+    const out = formatFetch(fetchResponse({ stopped: { code: 'timeout', message: 'https://forum.example/t/x/1 did not load within 45 s.' } }));
+    expect(out).toContain('"https://forum.example/t/x/1" did not load');
+  });
+
   it('tells the agent to have the user start lurkd when the server cannot start', () => {
     const out = formatError(new LurkdError('server_unavailable', 'Could not start the lurkd server. Run lurkd start in a terminal and try again.'));
     expect(out).toContain('server_unavailable');

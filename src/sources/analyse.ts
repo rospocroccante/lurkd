@@ -1,6 +1,7 @@
 import { isIPv4, isIPv6 } from 'node:net';
 import YAML from 'yaml';
 import { LurkdError } from '../errors.js';
+import { isRedditHost } from '../policy/urls.js';
 import { DRAFT_LIMITS } from './drafts.js';
 import { parseSource, type SourceConfig } from './schema.js';
 
@@ -866,6 +867,88 @@ export function analysableUrl(raw: string, rules: AddressRules = {}): URL {
   }
   u.hash = '';
   return u;
+}
+
+/**
+ * 0.2.1: the addresses of a draft under the rules of "Add a forum" (`analysableUrl`): `base_url`,
+ * every entry of `domains`, `login_url`, `signup_url`, `search_url`, `session_check.url` and
+ * `automation.rule_url` (M3) must be https (http only for the loopback names of the tests, with
+ * `rules.allowLoopback`), on a public host, with no user name or password, and not on Reddit
+ * (D50). One line per field that breaks a rule, as `<field>: <reason>`; the address itself is
+ * never repeated, since it could carry credentials. The DNS half is `draftResolveErrors`, which
+ * the draft routes run before a draft is stored.
+ */
+export function draftAddressErrors(
+  source: Pick<SourceConfig, 'base_url' | 'domains' | 'login_url' | 'signup_url' | 'search_url' | 'session_check'> & {
+    automation?: Pick<SourceConfig['automation'], 'rule_url'> | null;
+  },
+  rules: AddressRules = {},
+): string[] {
+  const out: string[] = [];
+  const reddit = (field: string) => `${field}: lurkd never reads Reddit live; Reddit threads come from files you saved (lurkd import reddit).`;
+  const check = (field: string, value: string | null | undefined): void => {
+    if (typeof value !== 'string') return;
+    const text = value.replaceAll('{query}', 'q');
+    try {
+      const u = analysableUrl(text, rules);
+      if (isRedditHost(u.hostname)) out.push(reddit(field));
+    } catch (e) {
+      out.push(`${field}: ${e instanceof LurkdError ? e.message : 'not an address lurkd opens.'}`);
+    }
+  };
+  check('base_url', source.base_url);
+  // One line for the list, however many entries break the rules.
+  const before = out.length;
+  for (const d of source.domains) {
+    if (out.length > before) break;
+    if (isRedditHost(d)) out.push(reddit('domains'));
+    else check('domains', `https://${d}/`);
+  }
+  check('login_url', source.login_url);
+  check('signup_url', source.signup_url);
+  check('search_url', source.search_url);
+  check('session_check.url', source.session_check?.url);
+  check('automation.rule_url', source.automation?.rule_url);
+  return out;
+}
+
+/**
+ * M3: the DNS half of the address rules for a draft (`checkResolvesPublic`): the host of
+ * `base_url` and every entry of `domains` must resolve, and only to public addresses, so a public
+ * name such as 127.0.0.1.nip.io cannot bring the user's own machine or network into a source.
+ * Each name is looked up once. One line for `base_url` and one for the list, as
+ * `draftAddressErrors` words them; with the test-only `rules.allowLoopback`, 127.0.0.1 and
+ * localhost are not looked up. Run it after `draftAddressErrors` passes.
+ */
+export async function draftResolveErrors(
+  source: Pick<SourceConfig, 'base_url' | 'domains'>,
+  resolve: ResolveHost,
+  rules: AddressRules = {},
+): Promise<string[]> {
+  const seen = new Map<string, Promise<string | null>>();
+  const reason = (host: string): Promise<string | null> => {
+    let p = seen.get(host);
+    if (p === undefined) {
+      p = checkResolvesPublic(new URL(`https://${host}/`), resolve, rules).then(
+        () => null,
+        (e: unknown) => (e instanceof LurkdError ? e.message : LOCAL_ADDRESS_MESSAGE),
+      );
+      seen.set(host, p);
+    }
+    return p;
+  };
+  const out: string[] = [];
+  const base = parseAbsolute(source.base_url);
+  const baseReason = base === null || base.hostname === '' ? null : await reason(base.hostname);
+  if (baseReason !== null) out.push(`base_url: ${baseReason}`);
+  for (const d of source.domains) {
+    const r = await reason(d);
+    if (r !== null) {
+      out.push(`domains: ${r}`);
+      break;
+    }
+  }
+  return out;
 }
 
 /** A source id from a host: `www.` dropped, every other character run turned into one hyphen, 63 characters at most. */

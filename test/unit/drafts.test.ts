@@ -4,10 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import YAML from 'yaml';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openArchive } from '../../src/archive/db.js';
 import { StateStore } from '../../src/archive/state.js';
 import { Registry } from '../../src/sources/registry.js';
+import { draftAddressErrors, draftResolveErrors, type ResolveHost } from '../../src/sources/analyse.js';
 import { AddRequestStore, DraftStore, draftRefused, ForbiddenLog, MAX_ADD_REQUESTS, MAX_DRAFT_BYTES, SampleStore } from '../../src/sources/drafts.js';
 
 const SEED = fileURLToPath(new URL('../fixtures/sources/seed/', import.meta.url));
@@ -34,6 +35,14 @@ const draft = (overrides: Record<string, unknown> = {}) =>
     automation: { policy: 'unknown', rule_url: `https://${HOST}/help/terms`, rule_quote: null, checked_at: '2026-11-09' },
     ...overrides,
   });
+
+// M3: no test here reaches a DNS server; every name resolves to one public address unless a test says otherwise.
+const publicResolver: ResolveHost = async () => [{ address: '93.184.215.14', family: 4 }];
+/** The address rules and the DNS half, as the page's approve route passes them. */
+const checks = (resolve: ResolveHost = publicResolver) => ({
+  addressErrors: (s: Parameters<typeof draftAddressErrors>[0]) => draftAddressErrors(s),
+  resolveErrors: (s: Parameters<typeof draftResolveErrors>[0]) => draftResolveErrors(s, resolve),
+});
 
 const failed = (r: ReturnType<DraftStore['submit']>): string[] => {
   if (r.ok) throw new Error('expected the draft to be refused');
@@ -109,7 +118,7 @@ describe('DraftStore', () => {
     ]);
   });
 
-  it('approval registers the source, switched off when forbidden', () => {
+  it('approval registers the source, switched off when forbidden', async () => {
     const r = drafts.submit(
       draft({ automation: { policy: 'forbidden', rule_url: `https://${HOST}/help/terms`, rule_quote: 'No bots.', checked_at: '2026-11-09' }, enabled: false }),
       HOST,
@@ -117,7 +126,7 @@ describe('DraftStore', () => {
     if (!r.ok) throw new Error(r.errors.join('\n'));
     expect(r.draft.warnings.at(-1)).toBe(`policy forbidden: "No bots." (https://${HOST}/help/terms)`);
     expect(registry.ids()).not.toContain('kappa');
-    const source = drafts.approve(r.draft.id);
+    const source = await drafts.approve(r.draft.id, checks());
     expect(source.id).toBe('kappa');
     expect(source.status).toBe('untested');
     expect(registry.view('kappa').session).toBe('disabled');
@@ -128,12 +137,12 @@ describe('DraftStore', () => {
     expect(fs.statSync(path.join(tmp, 'sources', 'kappa.yaml')).mode & 0o777).toBe(0o600);
   });
 
-  it('never enables a source by itself: it lands switched off and an unknown policy still needs the acknowledgment', () => {
+  it('never enables a source by itself: it lands switched off and an unknown policy still needs the acknowledgment', async () => {
     const r = drafts.submit(draft({ enabled: true }), HOST);
     if (!r.ok) throw new Error(r.errors.join('\n'));
     expect(r.draft.yaml).toContain('enabled: false');
     expect(registry.ids()).not.toContain('kappa');
-    drafts.approve(r.draft.id);
+    await drafts.approve(r.draft.id, checks());
     expect(registry.view('kappa')).toMatchObject({ enabled: false, session: 'disabled', needsAcknowledgment: true });
     expect(() => registry.assertUsable('kappa')).toThrow(expect.objectContaining({ code: 'disabled' }));
     expect(() => registry.enable('kappa', false)).toThrow(expect.objectContaining({ code: 'needs_acknowledgment' }));
@@ -141,7 +150,7 @@ describe('DraftStore', () => {
     expect(() => registry.assertUsable('kappa')).not.toThrow();
   });
 
-  it('clamps the rate limit and the page cap to the defaults and names each change', () => {
+  it('clamps the rate limit and the page cap to the defaults and names each change', async () => {
     const r = drafts.submit(
       draft({
         rate_limit: { min_delay_s: 1, max_requests_per_run: 60, max_requests_per_day: 100000 },
@@ -164,7 +173,7 @@ describe('DraftStore', () => {
     if (!strict.ok) throw new Error(strict.errors.join('\n'));
     expect(YAML.parse(strict.draft.yaml)).toMatchObject({ rate_limit: { min_delay_s: 5, max_requests_per_run: 10, max_requests_per_day: 50 }, pagination: { max_pages_per_thread: 3 } });
     expect(strict.draft.warnings.at(-1)).toBe(`policy unknown (https://${HOST}/help/terms)`);
-    expect(drafts.approve(strict.draft.id).rate_limit).toEqual({ min_delay_s: 5, max_requests_per_run: 10, max_requests_per_day: 50 });
+    expect((await drafts.approve(strict.draft.id, checks())).rate_limit).toEqual({ min_delay_s: 5, max_requests_per_run: 10, max_requests_per_day: 50 });
   });
 
   it('forces show_real_names and allow_beacons off with a warning each', () => {
@@ -178,49 +187,49 @@ describe('DraftStore', () => {
     expect(r.draft.warnings).not.toContain('allow_beacons: true');
   });
 
-  it('drops an earlier acknowledgment when a draft replaces a user source', () => {
+  it('drops an earlier acknowledgment when a draft replaces a user source', async () => {
     const first = drafts.submit(draft(), HOST);
     if (!first.ok) throw new Error(first.errors.join('\n'));
-    drafts.approve(first.draft.id);
+    await drafts.approve(first.draft.id, checks());
     registry.enable('kappa', true);
     expect(() => registry.assertUsable('kappa')).not.toThrow();
     expect(registry.view('kappa').enabled).toBe(true);
     const second = drafts.submit(draft({ name: 'Kappa Bench 2' }), HOST);
     if (!second.ok) throw new Error(second.errors.join('\n'));
     expect(second.draft.warnings.at(-1)).toBe('replaces the user source kappa');
-    drafts.approve(second.draft.id);
+    await drafts.approve(second.draft.id, checks());
     expect(registry.view('kappa')).toMatchObject({ name: 'Kappa Bench 2', enabled: false, needsAcknowledgment: true });
     expect(() => registry.assertUsable('kappa')).toThrow(expect.objectContaining({ code: 'disabled' }));
   });
 
-  it('clears every override when a draft replaces a user source', () => {
+  it('clears every override when a draft replaces a user source', async () => {
     const first = drafts.submit(draft(), HOST);
     if (!first.ok) throw new Error(first.errors.join('\n'));
-    drafts.approve(first.draft.id);
+    await drafts.approve(first.draft.id, checks());
     registry.enable('kappa', true);
     registry.setShowRealNames('kappa', true);
     registry.setAllowBeacons('kappa', true);
     const second = drafts.submit(draft({ name: 'Kappa 2' }), HOST);
     if (!second.ok) throw new Error(second.errors.join('\n'));
-    drafts.approve(second.draft.id);
+    await drafts.approve(second.draft.id, checks());
     expect(registry.view('kappa')).toMatchObject({ enabled: false, needsAcknowledgment: true, showRealNames: false, allowBeacons: false });
     expect(state.getOverride('kappa')).toEqual({ enabled: null, acknowledgedAt: null, acknowledgedPolicy: null, showRealNames: null, allowBeacons: null });
   });
 
-  it('leaves the draft pending and the overrides untouched when the file cannot be written', () => {
+  it('leaves the draft pending and the overrides untouched when the file cannot be written', async () => {
     fs.writeFileSync(path.join(tmp, 'blocker'), 'x');
     const blocked = Registry.load({ seedDir: SEED, userDir: path.join(tmp, 'blocker', 'sources'), state });
     const store = new DraftStore(db, blocked, { state });
     state.setOverride('kappa', { showRealNames: true });
     const r = store.submit(draft(), HOST);
     if (!r.ok) throw new Error(r.errors.join('\n'));
-    expect(() => store.approve(r.draft.id)).toThrow();
+    await expect(store.approve(r.draft.id, checks())).rejects.toThrow();
     expect(store.list().map((d) => d.state)).toEqual(['pending']);
     expect(blocked.ids()).not.toContain('kappa');
     expect(state.getOverride('kappa').showRealNames).toBe(true);
   });
 
-  it('writes no file when the overrides cannot be cleared', () => {
+  it('writes no file when the overrides cannot be cleared', async () => {
     const failing = new Proxy(state, {
       get: (t, p, rcv) =>
         p === 'setOverride'
@@ -232,7 +241,7 @@ describe('DraftStore', () => {
     const store = new DraftStore(db, registry, { state: failing });
     const r = store.submit(draft(), HOST);
     if (!r.ok) throw new Error(r.errors.join('\n'));
-    expect(() => store.approve(r.draft.id)).toThrow('disk full');
+    await expect(store.approve(r.draft.id, checks())).rejects.toThrow('disk full');
     expect(fs.existsSync(path.join(tmp, 'sources', 'kappa.yaml'))).toBe(false);
     expect(store.list().map((d) => d.state)).toEqual(['pending']);
   });
@@ -274,14 +283,14 @@ describe('DraftStore', () => {
     expect(failed(drafts.submit('id: [x]\n', HOST)).every((e) => e.startsWith('draft.yaml: '))).toBe(true);
   });
 
-  it('approves only pending drafts and re-checks the stored text', () => {
+  it('approves only pending drafts and re-checks the stored text', async () => {
     const r = drafts.submit(draft(), HOST);
     if (!r.ok) throw new Error(r.errors.join('\n'));
     // A row altered after submit (or written by an older version) is checked again on approval.
     db.prepare('UPDATE drafts SET yaml = ? WHERE id = ?').run(draft({ selectors: { post: 'a + b', author: 'b' }, enabled: false }), r.draft.id);
-    expect(() => drafts.approve(r.draft.id)).toThrow(expect.objectContaining({ code: 'invalid_request', details: { errors: [expect.stringMatching(/sibling combinator/)] } }));
+    await expect(drafts.approve(r.draft.id, checks())).rejects.toThrow(expect.objectContaining({ code: 'invalid_request', details: { errors: [expect.stringMatching(/sibling combinator/)] } }));
     db.prepare('UPDATE drafts SET yaml = ? WHERE id = ?').run(draft({ status: 'verified', show_real_names: true }), r.draft.id);
-    expect(() => drafts.approve(r.draft.id)).toThrow(
+    await expect(drafts.approve(r.draft.id, checks())).rejects.toThrow(
       expect.objectContaining({
         details: {
           errors: [expect.stringMatching(/status must be untested/), expect.stringMatching(/show_real_names must be false/), expect.stringMatching(/enabled must be false/)],
@@ -290,7 +299,7 @@ describe('DraftStore', () => {
     );
     const loose = draft({ allow_beacons: true, rate_limit: { min_delay_s: 1, max_requests_per_day: 1000 }, pagination: { max_pages_per_thread: 99 }, enabled: false });
     db.prepare('UPDATE drafts SET yaml = ? WHERE id = ?').run(loose, r.draft.id);
-    expect(() => drafts.approve(r.draft.id)).toThrow(
+    await expect(drafts.approve(r.draft.id, checks())).rejects.toThrow(
       expect.objectContaining({
         details: {
           errors: [
@@ -305,9 +314,122 @@ describe('DraftStore', () => {
     expect(registry.ids()).not.toContain('kappa');
     drafts.reject(r.draft.id);
     expect(drafts.list('rejected').map((d) => d.state)).toEqual(['rejected']);
-    expect(() => drafts.approve(r.draft.id)).toThrow(expect.objectContaining({ code: 'invalid_request' }));
-    expect(() => drafts.approve(9999)).toThrow(expect.objectContaining({ code: 'not_found' }));
+    await expect(drafts.approve(r.draft.id, checks())).rejects.toThrow(expect.objectContaining({ code: 'invalid_request' }));
+    await expect(drafts.approve(9999, checks())).rejects.toThrow(expect.objectContaining({ code: 'not_found' }));
     expect(() => drafts.reject(9999)).toThrow(expect.objectContaining({ code: 'not_found' }));
+  });
+
+  // 0.2.1: a draft stored by 0.2.0, before the address rules, is held to them when it is approved.
+  describe('approval of a draft stored before the address rules', () => {
+    /** A pending row as 0.2.0 stored it: the forced values in place, no address rule applied. */
+    const stored = (overrides: Record<string, unknown> = {}, host = HOST): number => {
+      const yaml = draft({ status: 'untested', enabled: false, ...overrides });
+      const info = db
+        .prepare('INSERT INTO drafts (source_id, host, yaml, warnings, state, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run('kappa', host, yaml, '[]', 'pending', '2026-11-01T10:00:00.000Z');
+      return Number(info.lastInsertRowid);
+    };
+    const refusedWith = async (id: number, resolve?: ResolveHost): Promise<string[]> => {
+      const e = await drafts.approve(id, checks(resolve)).then(
+        () => {
+          throw new Error('expected the approval to be refused');
+        },
+        (err: unknown) => err as { code: string; details: { errors: string[] } },
+      );
+      expect(e.code).toBe('invalid_request');
+      return e.details.errors;
+    };
+    const nothingWritten = (id: number) => {
+      expect(registry.ids()).not.toContain('kappa');
+      expect(fs.existsSync(path.join(tmp, 'sources', 'kappa.yaml'))).toBe(false);
+      expect(drafts.list().find((d) => d.id === id)?.state).toBe('pending');
+      expect(state.getOverride('kappa').showRealNames).toBe(true);
+    };
+    beforeEach(() => {
+      // An override approval would clear: it stays when nothing is written.
+      state.setOverride('kappa', { showRealNames: true });
+    });
+
+    // The schema wants the host of each of these addresses in domains, so 0.2.0 stored it there too.
+    it('refuses a private login_url', async () => {
+      const id = stored({ domains: [HOST, '192.168.1.10'], login_url: 'https://192.168.1.10/login' });
+      expect(await refusedWith(id)).toEqual([
+        'kappa.yaml: domains: lurkd opens public forums only, not addresses on your own network.',
+        'kappa.yaml: login_url: lurkd opens public forums only, not addresses on your own network.',
+      ]);
+      nothingWritten(id);
+    });
+
+    it('refuses an automation.rule_url that carries a user name or password, and does not repeat it', async () => {
+      const id = stored({ automation: { policy: 'unknown', rule_url: `https://user:secret@${HOST}/help/terms`, rule_quote: null, checked_at: '2026-11-09' } });
+      const errors = await refusedWith(id);
+      expect(errors).toEqual(['kappa.yaml: automation.rule_url: lurkd does not open addresses that carry a user name or password.']);
+      expect(errors.join('\n')).not.toContain('secret');
+      nothingWritten(id);
+    });
+
+    it('refuses a private signup_url, search_url or session_check.url', async () => {
+      const cases: [Record<string, unknown>, string][] = [
+        [{ domains: [HOST, '10.0.0.5'], signup_url: 'https://10.0.0.5/register' }, 'signup_url'],
+        [{ domains: [HOST, 'nas.local'], search_url: 'https://nas.local/search?q={query}' }, 'search_url'],
+        [{ domains: [HOST, 'router.home.arpa'], session_check: { url: 'https://router.home.arpa/account', logged_in_selector: 'a.account' } }, 'session_check.url'],
+      ];
+      for (const [overrides, field] of cases) {
+        const id = stored(overrides);
+        expect(await refusedWith(id), field).toContain(`kappa.yaml: ${field}: lurkd opens public forums only, not addresses on your own network.`);
+        nothingWritten(id);
+        drafts.reject(id);
+      }
+    });
+
+    // The schema already refuses a Reddit host in domains; the rule page is the address it does not check.
+    it('refuses a Reddit host', async () => {
+      const id = stored({ automation: { policy: 'unknown', rule_url: 'https://www.reddit.com/r/kappa/wiki/rules', rule_quote: null, checked_at: '2026-11-09' } });
+      expect(await refusedWith(id)).toEqual([
+        'kappa.yaml: automation.rule_url: lurkd never reads Reddit live; Reddit threads come from files you saved (lurkd import reddit).',
+      ]);
+      nothingWritten(id);
+    });
+
+    it('refuses a base host that resolves to a private address', async () => {
+      const id = stored();
+      const resolve = vi.fn<ResolveHost>(async () => [{ address: '192.168.1.1', family: 4 }]);
+      expect(await refusedWith(id, resolve)).toEqual([
+        'kappa.yaml: base_url: lurkd opens public forums only, not addresses on your own network.',
+        'kappa.yaml: domains: lurkd opens public forums only, not addresses on your own network.',
+      ]);
+      expect(resolve).toHaveBeenCalledWith(HOST);
+      nothingWritten(id);
+    });
+
+    it('does not look names up for a draft the address rules already refuse', async () => {
+      const id = stored({ login_url: 'https://192.168.1.10/login' });
+      const resolve = vi.fn<ResolveHost>(publicResolver);
+      await refusedWith(id, resolve);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when the draft stops being pending during the lookup', async () => {
+      const id = stored();
+      const resolve: ResolveHost = async () => {
+        drafts.reject(id);
+        return [{ address: '93.184.215.14', family: 4 }];
+      };
+      await expect(drafts.approve(id, checks(resolve))).rejects.toThrow(expect.objectContaining({ code: 'invalid_request' }));
+      expect(registry.ids()).not.toContain('kappa');
+      expect(fs.existsSync(path.join(tmp, 'sources', 'kappa.yaml'))).toBe(false);
+      expect(drafts.list().find((d) => d.id === id)?.state).toBe('rejected');
+    });
+
+    it('still approves a clean draft', async () => {
+      const id = stored();
+      const resolve = vi.fn<ResolveHost>(publicResolver);
+      const source = await drafts.approve(id, checks(resolve));
+      expect(source.id).toBe('kappa');
+      expect(resolve).toHaveBeenCalledWith(HOST);
+      expect(registry.view('kappa')).toMatchObject({ enabled: false, showRealNames: false });
+      expect(drafts.list('approved').map((d) => d.id)).toEqual([id]);
+    });
   });
 
   it('builds the invalid_request error of a refused draft', () => {

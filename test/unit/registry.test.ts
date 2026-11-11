@@ -81,7 +81,7 @@ describe('Registry', () => {
     expect(reg.view('beta-forbidden').session).toBe('disabled');
     expect(() => reg.assertUsable('beta-forbidden')).toThrow(/rules forbid automated access: "No bots\."/);
     expect(() => reg.assertUsable('beta-forbidden')).toThrow(
-      '"Beta Security Board" is switched off because its rules forbid automated access: "No bots." (https://beta.example.org/help/terms). Switch it on from the lurkd page if you accept that.',
+      '"Beta Security Board" is switched off because its rules forbid automated access: "No bots." ("https://beta.example.org/help/terms"). Switch it on from the lurkd page if you accept that.',
     );
     expect(() => reg.assertUsable('beta-forbidden')).toThrow(expect.objectContaining({ code: 'disabled' }));
   });

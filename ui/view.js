@@ -960,3 +960,16 @@ export function importResultView(out) {
   lines.push('Your agent finds it with archive.search, or reads it with source.fetch and the thread address.');
   return { heading: out.replaced ? 'Thread imported again' : 'Thread imported', title: String(out.title), lines };
 }
+
+/**
+ * D53: the banner for a newer lurkd, or null when there is none, when the person dismissed this
+ * version (the server keeps the dismissed version, M2), or when the version is not a plain semver.
+ * @param {{ current: string; latest: string; checkedAt: string } | null | undefined} update
+ * @param {string | null} dismissed the version the person dismissed last, if any
+ * @returns {{ version: string; text: string } | null}
+ */
+export function updateBanner(update, dismissed) {
+  if (!update || typeof update.latest !== 'string' || !/^\d{1,15}\.\d{1,15}\.\d{1,15}$/.test(update.latest)) return null;
+  if (dismissed === update.latest) return null;
+  return { version: update.latest, text: `lurkd ${update.latest} is available. Run lurkd update in a terminal to install it.` };
+}

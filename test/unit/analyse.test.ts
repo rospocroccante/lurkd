@@ -16,6 +16,8 @@ import {
   SIGNAL_LIMITS,
   type ForumSignals,
   type ResolveHost,
+  draftAddressErrors,
+  draftResolveErrors,
 } from '../../src/sources/analyse.js';
 import { fixture } from '../helpers/common.js';
 
@@ -588,5 +590,95 @@ describe('parseAddDraft', () => {
       expect(e.message, field).toBe(`${field} must not carry a user name or password.`);
       expect(JSON.stringify({ m: e.message, d: e.details ?? null })).not.toMatch(/alice|secret/);
     }
+  });
+});
+
+// 0.2.1: the addresses of an agent's draft (source.sample with draft_yaml) under the rules of "Add a forum".
+describe('draftAddressErrors', () => {
+  const base = {
+    base_url: 'https://forum.example',
+    domains: ['forum.example'],
+    login_url: 'https://forum.example/login',
+    signup_url: null,
+    search_url: 'https://forum.example/search?q={query}',
+    session_check: null,
+  };
+
+  it('passes public https addresses', () => expect(draftAddressErrors(base)).toEqual([]));
+
+  it('names each field that breaks a rule, once, without the address', () => {
+    const lines = draftAddressErrors({
+      base_url: 'https://192.168.1.4',
+      domains: ['forum.example', 'nas.local', 'printer.internal'],
+      login_url: 'http://forum.example/login',
+      signup_url: 'https://www.reddit.com/register',
+      search_url: 'https://me:pw@forum.example/search?q={query}',
+      session_check: { url: 'https://[::1]/me', logged_in_selector: '.me' },
+    });
+    expect(lines).toEqual([
+      'base_url: lurkd opens public forums only, not addresses on your own network.',
+      'domains: lurkd opens public forums only, not addresses on your own network.',
+      'login_url: lurkd opens forums over https only. Give the https address of the forum.',
+      'signup_url: lurkd never reads Reddit live; Reddit threads come from files you saved (lurkd import reddit).',
+      'search_url: lurkd does not open addresses that carry a user name or password.',
+      'session_check.url: lurkd opens public forums only, not addresses on your own network.',
+    ]);
+    expect(lines.join('\n')).not.toMatch(/192\.168|nas\.local|printer|me:pw|::1/);
+  });
+
+  it('refuses a Reddit domain', () => {
+    expect(draftAddressErrors({ ...base, domains: ['forum.example', 'old.reddit.com'] })).toEqual([
+      'domains: lurkd never reads Reddit live; Reddit threads come from files you saved (lurkd import reddit).',
+    ]);
+  });
+
+  it('lets 127.0.0.1 and localhost through, over http too, only for the tests', () => {
+    const loop = { ...base, base_url: 'http://127.0.0.1:4100', domains: ['127.0.0.1', 'localhost'], login_url: 'http://localhost:4100/login', search_url: null };
+    expect(draftAddressErrors(loop, { allowLoopback: true })).toEqual([]);
+    expect(draftAddressErrors(loop)).toHaveLength(3);
+  });
+
+  // M3: the rules page follows the same rules as the form.
+  it('checks automation.rule_url like the other addresses', () => {
+    const rule = (rule_url: string) => draftAddressErrors({ ...base, automation: { rule_url } });
+    expect(rule('https://forum.example/tos')).toEqual([]);
+    expect(rule('https://me:pw@forum.example/tos')).toEqual(['automation.rule_url: lurkd does not open addresses that carry a user name or password.']);
+    expect(rule('http://forum.example/tos')).toEqual(['automation.rule_url: lurkd opens forums over https only. Give the https address of the forum.']);
+    expect(rule('ftp://forum.example/tos')).toEqual(['automation.rule_url: Give the address of a forum page, starting with https://.']);
+    for (const local of ['https://127.0.0.1/tos', 'https://localhost/tos', 'https://10.1.2.3/tos', 'https://nas.local/tos', 'https://[::1]/tos'])
+      expect(rule(local), local).toEqual(['automation.rule_url: lurkd opens public forums only, not addresses on your own network.']);
+    expect(draftAddressErrors({ ...base, automation: { rule_url: 'http://127.0.0.1:4100/tos' } }, { allowLoopback: true })).toEqual([]);
+  });
+});
+
+// M3: the DNS half of the address rules, for a draft, before it is stored.
+describe('draftResolveErrors', () => {
+  const base = { base_url: 'https://forum.example', domains: ['forum.example', 'cdn.forum.example'] };
+  const resolver = (map: Record<string, string[]>): ResolveHost =>
+    vi.fn(async (host: string) => (map[host] ?? []).map((address) => ({ address, family: address.includes(':') ? 6 : 4 })));
+
+  it('passes names that resolve to public addresses, looking each one up once', async () => {
+    const resolve = resolver({ 'forum.example': ['93.184.215.14'], 'cdn.forum.example': ['2606:2800:21f:cb07:6820:80da:af6b:8b2c'] });
+    expect(await draftResolveErrors(base, resolve)).toEqual([]);
+    expect((resolve as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]).sort()).toEqual(['cdn.forum.example', 'forum.example']);
+  });
+
+  it('refuses a base host or a domain that resolves to a private address, or does not resolve', async () => {
+    expect(await draftResolveErrors(base, resolver({ 'forum.example': ['10.0.0.1'], 'cdn.forum.example': ['93.184.215.14'] }))).toEqual([
+      'base_url: lurkd opens public forums only, not addresses on your own network.',
+      'domains: lurkd opens public forums only, not addresses on your own network.',
+    ]);
+    expect(await draftResolveErrors(base, resolver({ 'forum.example': ['93.184.215.14'], 'cdn.forum.example': ['127.0.0.1'] }))).toEqual([
+      'domains: lurkd opens public forums only, not addresses on your own network.',
+    ]);
+    const missing = await draftResolveErrors(base, resolver({ 'forum.example': ['93.184.215.14'] }));
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatch(/^domains: lurkd could not look up/);
+  });
+
+  it('does not look up 127.0.0.1 and localhost with the test-only loopback allowance', async () => {
+    const resolve = resolver({});
+    expect(await draftResolveErrors({ base_url: 'http://127.0.0.1:4100', domains: ['127.0.0.1', 'localhost'] }, resolve, { allowLoopback: true })).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

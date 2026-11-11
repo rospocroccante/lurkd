@@ -44,12 +44,24 @@ function failure(e: unknown): Result {
   return { content: [{ type: 'text', text: formatError(err) }], isError: true };
 }
 
-async function run(work: () => Promise<string>): Promise<Result> {
+async function runTool(work: () => Promise<string>, takeNote: () => string | null): Promise<Result> {
+  let r: Result;
   try {
-    return text(await work());
+    r = text(await work());
   } catch (e) {
-    return failure(e);
+    r = failure(e);
   }
+  // D53: a note from lurkd itself (a server of another version), once, before the answer. Not
+  // repeated when the answer is that same message.
+  const note = takeNote();
+  const first = r.content[0];
+  if (note !== null && first !== undefined && !first.text.includes(note)) first.text = `${note}\n\n${first.text}`;
+  return r;
+}
+
+export interface McpServerOptions {
+  /** D53: a lurkd note waiting for the next tool result, or null; it is taken once. */
+  takeNote?: () => string | null;
 }
 
 /** The body without the keys whose value is undefined. */
@@ -57,8 +69,10 @@ function defined(o: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 }
 
-export function buildMcpServer(client: ApiClient, naming: 'dot' | 'underscore'): McpServer {
+export function buildMcpServer(client: ApiClient, naming: 'dot' | 'underscore', opts: McpServerOptions = {}): McpServer {
   const name = (id: ToolId) => toolName(id, naming);
+  const takeNote = opts.takeNote ?? (() => null);
+  const run = (work: () => Promise<string>): Promise<Result> => runTool(work, takeNote);
   const server = new McpServer({ name: 'lurkd', version: VERSION }, { instructions: instructions(name) });
 
   server.registerTool(
@@ -183,7 +197,18 @@ export async function runMcpStdio(paths: LurkdPaths, naming: 'dot' | 'underscore
   stdout.write = process.stderr.write.bind(process.stderr) as typeof stdout.write;
 
   const abort = new AbortController();
-  const server = buildMcpServer(createApiClient(paths, { autoStart: true, signal: abort.signal }), naming);
+  // D53: a server of another version is named once, in the next tool result and in the MCP log.
+  let note: string | null = null;
+  const onSkew = (message: string): void => {
+    note = message;
+    process.stderr.write(`lurkd mcp: ${message}\n`);
+  };
+  const takeNote = (): string | null => {
+    const n = note;
+    note = null;
+    return n;
+  };
+  const server = buildMcpServer(createApiClient(paths, { autoStart: true, signal: abort.signal, onSkew }), naming, { takeNote });
   const transport = new StdioServerTransport(process.stdin, protocol);
   await new Promise<void>((resolve, reject) => {
     let done = false;

@@ -14,7 +14,7 @@ import { parseSource, type Selectors, type SourceConfig } from './schema.js';
 // `allow_beacons` and `enabled` to false, and the rate limit and page cap to the defaults or
 // stricter; each change is listed among the warnings. The user loosens them later through the
 // normal settings, never through a draft. Approval is the only path from a draft to
-// `Registry.writeUserSource`, and it checks the stored text again.
+// `Registry.writeUserSource`, and it checks the stored text again, its addresses included.
 
 /** A draft larger than this (UTF-8 bytes) is refused before it is parsed. */
 export const MAX_DRAFT_BYTES = 64 * 1024;
@@ -275,16 +275,39 @@ export class DraftStore {
    * without `host`, a domain another source claims, a selector lurkd cannot run or that costs too
    * much. `status` is rewritten to `untested`; `show_real_names`, `allow_beacons` and `enabled`
    * to false; `rate_limit` and `pagination.max_pages_per_thread` clamped to `DRAFT_LIMITS`. Each
-   * rewrite except the status adds a warning after the policy line.
+   * rewrite except the status adds a warning after the policy line. `opts.addressErrors` adds
+   * the caller's address rules (`draftAddressErrors`), each line reported under the file name.
    */
-  submit(yamlText: string, host: string): { ok: true; draft: DraftView } | { ok: false; errors: string[] } {
-    const checked = this.check(yamlText, host, true);
+  submit(
+    yamlText: string,
+    host: string,
+    opts: { addressErrors?: (source: SourceConfig) => string[] } = {},
+  ): { ok: true; draft: DraftView } | { ok: false; errors: string[] } {
+    const checked = this.check(yamlText, host, true, opts.addressErrors);
     if (!checked.ok) return checked;
     const createdAt = this.now().toISOString();
     const info = this.db
       .prepare('INSERT INTO drafts (source_id, host, yaml, warnings, state, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(checked.source.id, hostKey(host), checked.yaml, JSON.stringify(checked.warnings), 'pending', createdAt);
     return { ok: true, draft: this.view(Number(info.lastInsertRowid)) };
+  }
+
+  /**
+   * M3: `submit` with an asynchronous check between the synchronous ones and the write:
+   * `opts.resolveErrors` (`draftResolveErrors`, the DNS half of the address rules) runs on a
+   * draft that passed every other check, and a line from it refuses the draft under the file name.
+   * Every check of `submit` runs again before the draft is stored.
+   */
+  async submitResolved(
+    yamlText: string,
+    host: string,
+    opts: { addressErrors?: (source: SourceConfig) => string[]; resolveErrors: (source: SourceConfig) => Promise<string[]> },
+  ): Promise<{ ok: true; draft: DraftView } | { ok: false; errors: string[] }> {
+    const first = this.check(yamlText, host, true, opts.addressErrors);
+    if (!first.ok) return first;
+    const lines = await opts.resolveErrors(first.source);
+    if (lines.length > 0) return { ok: false, errors: lines.map((line) => `${first.source.id}.yaml: ${line}`) };
+    return this.submit(yamlText, host, { addressErrors: opts.addressErrors });
   }
 
   /** Drafts by id, oldest first; only those in `state` when given. */
@@ -299,16 +322,32 @@ export class DraftStore {
 
   /**
    * Registers a pending draft with `registry.writeUserSource`, after checking the stored text
-   * again (`invalid_request` with `details.errors` when it no longer passes). The source's stored
-   * overrides (on/off switch, acknowledgment, real names, beacons) are cleared, so a draft that
-   * replaces a user source never inherits the user's earlier choices: it lands switched off, and
-   * policy `unknown` or `forbidden` needs the acknowledgment again (Task 4 rules). `not_found` for
-   * an unknown id, `invalid_request` for a draft that is not pending.
+   * again (`invalid_request` with `details.errors` when it no longer passes). The check includes
+   * the address rules `opts.addressErrors` (`draftAddressErrors`) and then the DNS half
+   * `opts.resolveErrors` (`draftResolveErrors`), with the same field errors as `submitResolved`,
+   * so a draft stored before those rules (0.2.0) cannot bring a private, credentialed or Reddit
+   * address into a source. The draft is read and checked again after the lookup, so a draft
+   * rejected or changed meanwhile is not written. The source's stored overrides (on/off switch,
+   * acknowledgment, real names, beacons) are cleared, so a draft that replaces a user source never
+   * inherits the user's earlier choices: it lands switched off, and policy `unknown` or
+   * `forbidden` needs the acknowledgment again (Task 4 rules). `not_found` for an unknown id,
+   * `invalid_request` for a draft that is not pending.
    */
-  approve(id: number): SourceConfig {
+  async approve(
+    id: number,
+    opts: { addressErrors: (source: SourceConfig) => string[]; resolveErrors: (source: SourceConfig) => Promise<string[]> },
+  ): Promise<SourceConfig> {
+    const first = this.pendingRow(id);
+    const before = this.check(first.yaml, first.host, false, opts.addressErrors);
+    if (!before.ok) throw draftRefused(before.errors);
+    const lines = await opts.resolveErrors(before.source);
+    if (lines.length > 0) throw draftRefused(lines.map((line) => `${before.source.id}.yaml: ${line}`));
+    // Read again after the lookup: the draft may have been rejected, approved or changed meanwhile.
     const row = this.pendingRow(id);
-    const checked = this.check(row.yaml, row.host, false);
+    const checked = this.check(row.yaml, row.host, false, opts.addressErrors);
     if (!checked.ok) throw draftRefused(checked.errors);
+    if (row.yaml !== first.yaml || row.host !== first.host)
+      throw new LurkdError('invalid_request', `Draft ${id} changed while lurkd checked it. Approve it again.`, { draftId: id });
     const sourceId = checked.source.id;
     // One transaction: the overrides are cleared first and the draft marked approved last, so a
     // failed override write leaves no file behind, and a failed file write rolls the cleared
@@ -349,7 +388,7 @@ export class DraftStore {
    * Every check of `submit`. `rewrite` applies the forced values (the stored text already has
    * them); without it, a stored text that breaks them is refused.
    */
-  private check(yamlText: string, host: string, rewrite: boolean): Checked {
+  private check(yamlText: string, host: string, rewrite: boolean, addressErrors?: (source: SourceConfig) => string[]): Checked {
     if (Buffer.byteLength(yamlText, 'utf8') > MAX_DRAFT_BYTES)
       return { ok: false, errors: [`${DRAFT_FILE}: the draft is larger than ${MAX_DRAFT_BYTES / 1024} KB`] };
     const doc = parseDocument(yamlText, { uniqueKeys: true });
@@ -407,6 +446,7 @@ export class DraftStore {
       if (clash !== undefined) errors.push(`${file}: domain ${clash} is already claimed by ${other.id}`);
     }
     errors.push(...selectorErrors(source, file));
+    if (addressErrors) errors.push(...addressErrors(source).map((line) => `${file}: ${line}`));
     if (errors.length > 0) return { ok: false, errors };
 
     const warnings = [...warningsFor(source), ...changed];

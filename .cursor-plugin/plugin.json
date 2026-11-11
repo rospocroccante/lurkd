@@ -1,6 +1,6 @@
 {
   "name": "lurkd",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read the forums AI search tends to miss, public or behind a login, through your own browser session, read-only, as threaded Markdown with pseudonymised authors.",
   "license": "Apache-2.0",
   "mcpServers": "./.mcp.json"

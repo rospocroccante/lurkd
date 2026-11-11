@@ -53,6 +53,7 @@ import {
   termsLinkText,
   todoItems,
   topicsOf,
+  updateBanner,
 } from './view.js';
 
 /**
@@ -78,6 +79,8 @@ import {
  *   groups: import('./view.js').CustomGroupView[];
  *   retentionDays: number | null;
  *   cookieNotice: string;
+ *   update: { current: string; latest: string; checkedAt: string } | null;
+ *   updateCheck: { on: boolean; offByEnv: boolean };
  * }} AppState
  */
 
@@ -273,7 +276,55 @@ function drawAll() {
     const sel = /** @type {HTMLSelectElement} */ ($('retention'));
     if (document.activeElement !== sel) sel.value = s.retentionDays === null ? '' : String(s.retentionDays);
   });
+  // The server's value, except while a dismissal is on its way there.
+  if (!dismissPending) updateDismissed = typeof s.updateDismissed === 'string' ? s.updateDismissed : null;
+  part('update', [s.update, updateDismissed], drawUpdate);
+  part('update-check', s.updateCheck, () => {
+    const box = /** @type {HTMLInputElement} */ ($('update-check'));
+    const uc = s.updateCheck ?? { on: false, offByEnv: false };
+    if (document.activeElement !== box) box.checked = uc.on;
+    box.disabled = uc.offByEnv;
+    $('update-check-note').textContent = uc.offByEnv
+      ? 'Switched off by LURKD_NO_UPDATE_CHECK=1 in the environment that started lurkd.'
+      : 'Once a day, lurkd asks the npm registry for the number of the latest version. The request carries nothing about you or your forums.';
+  });
   $('directory').setAttribute('aria-busy', 'false');
+}
+
+// D53: the banner for a newer lurkd. "Dismiss" hides it for that version. M2: the server keeps
+// the dismissed version in the archive, so it holds across restarts and ports; browser storage is
+// per origin, and the port changes with every start.
+
+/** The version the person dismissed, as the server last said, or as the person just pressed. */
+let updateDismissed = /** @type {string | null} */ (null);
+/** True while the POST of a dismissal is in flight, so a poll does not show the banner again. */
+let dismissPending = false;
+
+function drawUpdate() {
+  const view = updateBanner(state?.update ?? null, updateDismissed);
+  const box = $('update-banner');
+  box.hidden = view === null;
+  $('update-text').textContent = view?.text ?? '';
+}
+
+async function onUpdateDismiss() {
+  const v = state?.update?.latest ?? null;
+  if (v === null) return;
+  updateDismissed = v;
+  dismissPending = true;
+  drawUpdate();
+  try {
+    await act('POST', '/api/update/dismiss', { version: v });
+  } finally {
+    dismissPending = false;
+  }
+  drawUpdate();
+}
+
+async function onUpdateCheck() {
+  const box = /** @type {HTMLInputElement} */ ($('update-check'));
+  const out = await act('POST', '/api/settings/update-check', { enabled: box.checked });
+  if (out) notify(out.updateCheck.on ? 'lurkd checks for new versions once a day.' : 'lurkd no longer checks for new versions.', 'info');
 }
 
 function drawHandoff() {
@@ -2644,6 +2695,8 @@ function start() {
   $('notice-close').addEventListener('click', () => ($('notice').hidden = true));
   $('thread-close').addEventListener('click', closeThread);
   $('retention').addEventListener('change', onRetention);
+  $('update-dismiss').addEventListener('click', onUpdateDismiss);
+  $('update-check').addEventListener('change', onUpdateCheck);
   $('add-form').addEventListener('submit', onAddSubmit);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') poll();

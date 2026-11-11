@@ -16,6 +16,8 @@ import { checkNavigable, isAllowedHost, isRedditHost } from '../policy/urls.js';
 import { renderNames, stripMarkers } from '../pseudonym.js';
 import {
   analysableUrl,
+  draftAddressErrors,
+  draftResolveErrors,
   analyseSource,
   automationPrefill,
   checkResolvesPublic,
@@ -742,7 +744,13 @@ export class FetchService {
     // D50: no sample, draft or window for Reddit.
     if (isRedditHost(host)) throw redditUnsupported(redditThreadId(u.href));
     if (draftYaml !== undefined) {
-      const r = this.drafts.submit(draftYaml, host);
+      // 0.2.1: the addresses of the draft follow the rules of "Add a forum".
+      const rules = { allowLoopback: this.allowLoopback };
+      // M3: and the DNS half, for the base host and every domain, before the draft is stored.
+      const r = await this.drafts.submitResolved(draftYaml, host, {
+        addressErrors: (s) => draftAddressErrors(s, rules),
+        resolveErrors: (s) => draftResolveErrors(s, this.resolveHost, rules),
+      });
       if (!r.ok) throw draftRefused(r.errors);
       return { status: 'draft_saved', draftId: r.draft.id, warnings: r.draft.warnings };
     }
