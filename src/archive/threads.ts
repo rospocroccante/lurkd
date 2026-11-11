@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { LurkdError } from '../errors.js';
-import { namesIn, pseudonym, renderNames, stripMarkers } from '../pseudonym.js';
-import type { AuthorSignals, Engine, ExtractedPost, ExtractedThread } from '../types.js';
+import { eachName, pseudonym, renderNames, stripMarkers } from '../pseudonym.js';
+import type { AuthorSignals, Engine, ExtractedPost, ExtractedThread, ImportProvenance, ImportVia } from '../types.js';
 
 export interface StoredThread {
   id: number;
@@ -14,6 +14,8 @@ export interface StoredThread {
   extraction: string;
   quality: 'full' | 'low';
   fetchedAt: string;
+  /** D50: set for a thread imported from a saved file, null for one read live. */
+  imported: ImportProvenance | null;
 }
 
 /** One matching post. `author` is the real username and `bodyMd` keeps the name markers. */
@@ -48,6 +50,8 @@ interface ThreadRow {
   extraction: string;
   quality: 'full' | 'low';
   fetched_at: string;
+  imported_via: ImportVia | null;
+  replaced_import_at: string | null;
 }
 
 interface PostRow {
@@ -90,6 +94,61 @@ function toIso(at: string | undefined, what = 'timestamp'): string {
 const indexText = (text: string): string => renderNames(text, () => '');
 
 /**
+ * How many names mentioned in the bodies of one thread the authors table remembers, beyond the
+ * thread's post authors (who are all remembered). A crafted body can mention millions of distinct
+ * names, and each costs a SHA-256 and a row; the names past the cap still render as pseudonyms,
+ * only lurkd cannot map those pseudonyms back to a username.
+ */
+export const MAX_MENTIONED_NAMES = 5000;
+// Rows per INSERT when the authors are written: 4 values each, well under SQLite's limit of 32766.
+const AUTHOR_ROWS_PER_INSERT = 200;
+
+interface Remembered {
+  username: string;
+  profileUrl: string | null;
+}
+
+/**
+ * The names one thread remembers, by pseudonym: every post author, then the first
+ * MAX_MENTIONED_NAMES distinct names its bodies mention. The posts are read in number order,
+ * whatever order they come in, so a save and a later prune (which reads them by number) remember
+ * the same names. The first spelling of a name is kept with the last profile URL given for it.
+ * `pseudonymOf` is memoised by the caller.
+ */
+function rememberedNames(
+  posts: Iterable<{ number: number; author: string; authorUrl: string | null; bodyMd: string }>,
+  pseudonymOf: (name: string) => string,
+): Map<string, Remembered> {
+  const out = new Map<string, Remembered>();
+  const remember = (username: string, profileUrl: string | null): boolean => {
+    const name = stripMarkers(username).trim();
+    if (!name) return false;
+    const key = pseudonymOf(name);
+    const known = out.get(key);
+    if (known === undefined) out.set(key, { username: name, profileUrl });
+    else if (profileUrl !== null) known.profileUrl = profileUrl;
+    return known === undefined;
+  };
+  const list = [...posts].sort((a, b) => a.number - b.number);
+  for (const p of list) remember(p.author, p.authorUrl);
+  // Each spelling is looked at once, so a name mentioned a million times costs one lookup.
+  const spellings = new Set<string>();
+  let mentioned = 0;
+  for (const p of list) {
+    if (mentioned >= MAX_MENTIONED_NAMES) break;
+    // The scan stops at the cap: a body past it is not read to its end.
+    eachName(p.bodyMd, (name) => {
+      if (!spellings.has(name)) {
+        spellings.add(name);
+        if (remember(name, null)) mentioned += 1;
+      }
+      return mentioned < MAX_MENTIONED_NAMES;
+    });
+  }
+  return out;
+}
+
+/**
  * Turns user input into an FTS5 query that cannot carry FTS5 syntax: each whitespace-separated
  * token becomes a quoted string (inner double quotes doubled), so operators, column filters,
  * prefixes, NEAR and parentheses are plain text; tokens are ANDed. Null when nothing searchable
@@ -122,6 +181,7 @@ function toThread(r: ThreadRow): StoredThread {
     extraction: r.extraction,
     quality: r.quality,
     fetchedAt: r.fetched_at,
+    imported: r.imported_via === null ? null : { via: r.imported_via, replacedImportAt: r.replaced_import_at },
   };
 }
 
@@ -147,23 +207,28 @@ export class ThreadStore {
 
   /**
    * Stores a thread, replacing the posts (and their FTS rows) of an earlier fetch of the same URL.
-   * Returns the thread id, which stays the same across re-fetches.
+   * Returns the thread id, which stays the same across re-fetches. `imported` is how a thread from
+   * a saved file came in (D50); a save without it clears what an earlier import kept.
    */
-  save(sourceId: string, t: ExtractedThread, fetchedAt?: string): number {
+  save(sourceId: string, t: ExtractedThread, fetchedAt?: string, imported: ImportProvenance | null = null): number {
     const at = toIso(fetchedAt, 'fetchedAt');
+    const replacedAt = imported?.replacedImportAt == null ? null : toIso(imported.replacedImportAt, 'replacedImportAt');
     const db = this.db;
     return db
       .transaction((): number => {
         const { id } = db
           .prepare(
-            `INSERT INTO threads (source_id, url, title, engine, pages, posts_expected, extraction, quality, fetched_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO threads (source_id, url, title, engine, pages, posts_expected, extraction, quality, fetched_at, imported_via, replaced_import_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (url) DO UPDATE SET source_id = excluded.source_id, title = excluded.title,
                engine = excluded.engine, pages = excluded.pages, posts_expected = excluded.posts_expected,
-               extraction = excluded.extraction, quality = excluded.quality, fetched_at = excluded.fetched_at
+               extraction = excluded.extraction, quality = excluded.quality, fetched_at = excluded.fetched_at,
+               imported_via = excluded.imported_via, replaced_import_at = excluded.replaced_import_at
              RETURNING id`,
           )
-          .get(sourceId, t.url, t.title, t.engine, t.pages, t.postsExpected, t.extraction, t.quality, at) as { id: number };
+          .get(sourceId, t.url, t.title, t.engine, t.pages, t.postsExpected, t.extraction, t.quality, at, imported?.via ?? null, replacedAt) as {
+          id: number;
+        };
 
         db.prepare('DELETE FROM posts_fts WHERE rowid IN (SELECT id FROM posts WHERE thread_id = ?)').run(id);
         db.prepare('DELETE FROM posts WHERE thread_id = ?').run(id);
@@ -189,17 +254,17 @@ export class ThreadStore {
           insertFts.run(lastInsertRowid, title, indexText(p.bodyMd));
         }
 
-        const upsertAuthor = db.prepare(
-          `INSERT INTO authors (source_id, pseudonym, username, profile_url) VALUES (?, ?, ?, ?)
-           ON CONFLICT (source_id, pseudonym) DO UPDATE SET profile_url = coalesce(excluded.profile_url, authors.profile_url)`,
-        );
-        const remember = (username: string, profileUrl: string | null) => {
-          const name = stripMarkers(username).trim();
-          if (name) upsertAuthor.run(sourceId, pseudonym(sourceId, name, this.salt), name, profileUrl);
-        };
-        for (const p of t.posts) {
-          remember(p.author, p.authorUrl);
-          for (const name of namesIn(p.bodyMd)) remember(name, null);
+        const rows = [...rememberedNames(t.posts, this.pseudonymOf(sourceId)).entries()];
+        const upsert = (count: number) =>
+          db.prepare(
+            `INSERT INTO authors (source_id, pseudonym, username, profile_url) VALUES ${Array(count).fill('(?, ?, ?, ?)').join(', ')}
+             ON CONFLICT (source_id, pseudonym) DO UPDATE SET profile_url = coalesce(excluded.profile_url, authors.profile_url)`,
+          );
+        const full = rows.length >= AUTHOR_ROWS_PER_INSERT ? upsert(AUTHOR_ROWS_PER_INSERT) : null;
+        for (let i = 0; i < rows.length; i += AUTHOR_ROWS_PER_INSERT) {
+          const chunk = rows.slice(i, i + AUTHOR_ROWS_PER_INSERT);
+          const stmt = chunk.length === AUTHOR_ROWS_PER_INSERT && full !== null ? full : upsert(chunk.length);
+          stmt.run(chunk.flatMap(([key, r]) => [sourceId, key, r.username, r.profileUrl]));
         }
         return id;
       })
@@ -261,6 +326,17 @@ export class ThreadStore {
     }));
   }
 
+  /**
+   * When each source was last read (D51, the page's "Last read"): the latest `fetched_at` among its
+   * archived threads, by source id. A source with no thread is absent. For imported threads it is
+   * the time of the latest import. The page asks on every poll; the index threads_source_fetched
+   * (schema version 6) answers it without reading the table or sorting.
+   */
+  lastFetchedBySource(): Map<string, string> {
+    const rows = this.db.prepare('SELECT source_id, max(fetched_at) AS at FROM threads GROUP BY source_id').all() as { source_id: string; at: string }[];
+    return new Map(rows.map((r) => [r.source_id, r.at]));
+  }
+
   /** Deletes every thread, post, FTS row and author of a source; returns the number of threads deleted. */
   deleteSource(sourceId: string): number {
     const db = this.db;
@@ -309,19 +385,35 @@ export class ThreadStore {
       .immediate();
   }
 
-  // Deletes the authors of a source that no remaining post has as author or names in its body.
+  /** The pseudonym of a name on a source, memoised for one save or one prune. */
+  private pseudonymOf(sourceId: string): (name: string) => string {
+    const kept = new Map<string, string>();
+    return (name) => {
+      const key = name.toLowerCase();
+      let p = kept.get(key);
+      if (p === undefined) {
+        p = pseudonym(sourceId, key, this.salt);
+        kept.set(key, p);
+      }
+      return p;
+    };
+  }
+
+  // Deletes the authors of a source that no remaining thread remembers: as save does, every post
+  // author and the first MAX_MENTIONED_NAMES names each thread's bodies mention.
   private pruneAuthors(sourceId: string): void {
     const kept = new Set<string>();
-    const keep = (username: string) => {
-      const name = stripMarkers(username).trim();
-      if (name) kept.add(pseudonym(sourceId, name, this.salt));
-    };
-    const posts = this.db
-      .prepare('SELECT posts.author, posts.body_md FROM posts JOIN threads ON threads.id = posts.thread_id WHERE threads.source_id = ?')
-      .iterate(sourceId) as IterableIterator<{ author: string; body_md: string }>;
-    for (const p of posts) {
-      keep(p.author);
-      for (const name of namesIn(p.body_md)) keep(name);
+    const pseudonymOf = this.pseudonymOf(sourceId);
+    const threadIds = this.db.prepare('SELECT id FROM threads WHERE source_id = ?').pluck().all(sourceId) as number[];
+    const postsOf = this.db.prepare('SELECT number, author, author_url, body_md FROM posts WHERE thread_id = ? ORDER BY number');
+    for (const id of threadIds) {
+      const posts = (postsOf.all(id) as { number: number; author: string; author_url: string | null; body_md: string }[]).map((p) => ({
+        number: p.number,
+        author: p.author,
+        authorUrl: p.author_url,
+        bodyMd: p.body_md,
+      }));
+      for (const key of rememberedNames(posts, pseudonymOf).keys()) kept.add(key);
     }
     const stored = this.db.prepare('SELECT pseudonym FROM authors WHERE source_id = ?').pluck().all(sourceId) as string[];
     const del = this.db.prepare('DELETE FROM authors WHERE source_id = ? AND pseudonym = ?');

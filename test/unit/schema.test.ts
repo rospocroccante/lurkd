@@ -27,7 +27,7 @@ describe('parseSource defaults', () => {
   it('fills null and empty defaults for the optional fields', () => {
     const { login_url: _, status: __, ...bare } = base;
     const r = parse(bare); if (!r.ok) throw new Error(r.errors.join());
-    expect(r.source).toMatchObject({ description: null, status: 'untested', login_url: null, search_url: null, read_endpoints: [], session_check: null, selectors: null, deny_paths: [] });
+    expect(r.source).toMatchObject({ description: null, status: 'untested', login_url: null, signup_url: null, search_url: null, read_endpoints: [], session_check: null, selectors: null, deny_paths: [] });
   });
 
   it('defaults profile_lookup to false for generic and custom', () => {
@@ -113,6 +113,31 @@ describe('parseSource hosts and URLs', () => {
     expect(parse({ ...base, base_url: 'http://127.0.0.1:4100', domains: ['127.0.0.1'], login_url: null }).ok).toBe(true);
     expect(parse({ ...base, base_url: 'http://localhost:4100/forum', domains: ['localhost'], login_url: 'http://localhost:4100/login' }).ok).toBe(true);
     expect(errorsOf({ ...base, base_url: 'forum.example.org' })).toEqual(['forum-example.yaml: base_url must be an absolute URL']);
+  });
+
+  it('accepts a signup_url on one of the domains (D47)', () => {
+    const r = parse({ ...base, signup_url: 'https://forum.example.org/signup' });
+    if (!r.ok) throw new Error(r.errors.join());
+    expect(r.source.signup_url).toBe('https://forum.example.org/signup');
+    const nulled = parse({ ...base, signup_url: null });
+    expect(nulled.ok && nulled.source.signup_url).toBeNull();
+  });
+
+  it('checks signup_url like the other URLs: absolute, https, host in domains', () => {
+    expect(errorsOf({ ...base, signup_url: 'https://evil.example/signup' })).toEqual([
+      'forum-example.yaml: signup_url host evil.example is not listed in domains',
+    ]);
+    expect(errorsOf({ ...base, signup_url: 'https://www.forum.example.org/signup' })).toEqual([
+      'forum-example.yaml: signup_url host www.forum.example.org is not listed in domains',
+    ]);
+    expect(errorsOf({ ...base, signup_url: 'http://forum.example.org/signup' })).toEqual([
+      'forum-example.yaml: signup_url must use https (http only for 127.0.0.1 and localhost)',
+    ]);
+    expect(errorsOf({ ...base, signup_url: '/signup' })).toEqual(['forum-example.yaml: signup_url must be an absolute URL']);
+    expect(errorsOf({ ...base, signup_url: 'javascript:alert(1)' })).toContain(
+      'forum-example.yaml: signup_url must use https (http only for 127.0.0.1 and localhost)',
+    );
+    expect(errorsOf({ ...base, signup_url: 42 })).toEqual(['forum-example.yaml: signup_url must be a string']);
   });
 
   it('requires {query} in search_url', () =>
@@ -252,6 +277,7 @@ describe('parseSource YAML input', () => {
       base_url: 'https://forum.example.org',
       domains: ['forum.example.org', 'static.forum.example.org'],
       login_url: 'https://forum.example.org/login',
+      signup_url: null,
       search_url: null,
       read_endpoints: [{ method: 'POST', path: '/search/run*', note: 'search form of the page, read-only' }],
       session_check: { url: 'https://forum.example.org/account', logged_in_selector: 'a.logout' },

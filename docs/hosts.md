@@ -1,20 +1,20 @@
 # Connecting your agent
 
-Every host needs to run `lurkd mcp` over stdio. The server starts lurkd's background process on the first tool call, so you do not need to start anything first. The commands below were checked against each host's documentation. None has been run on a real install yet.
+Every host needs to run `lurkd mcp` over stdio. The server starts lurkd's background process on the first tool call, so you do not need to start anything first. The commands below were checked against each host's documentation.
 
-Claude Code, Codex, Cline, Cursor and Gemini CLI are the hosts this version targets. You need one that speaks MCP or can run shell commands.
+Claude Code, Codex, Cline, Cursor and Gemini CLI are the hosts this version targets. You need one that speaks MCP or can run shell commands. Claude Code was tried on a real install on 2026-11-10: `claude mcp list` showed the lurkd server connected, and a session called `sources.search` and `session.status`. Codex, Cursor, Cline and Gemini CLI have not been tried on a real install yet.
 
 ## The skill
 
-The skill is a short `SKILL.md` that tells the agent how to use lurkd and to treat forum text as data. It lives in `skills/lurkd/` and needs the `lurkd` command from the [install](getting-started.md). The `skills` CLI from Vercel Labs fetches it straight from the repository over Git, so it does not depend on how you installed the package:
+The skill is a short `SKILL.md` that tells the agent how to use lurkd and to treat forum text as data. It lives in `skills/lurkd/` of the repository and of the npm package, and needs the `lurkd` command from the [install](getting-started.md). The `skills` CLI from Vercel Labs fetches it straight from the repository over Git, so it does not depend on how you installed the package:
 
 ```sh
 DISABLE_TELEMETRY=1 npx skills add rospocroccante/lurkd --skill lurkd --agent claude-code --global
 ```
 
-`DISABLE_TELEMETRY=1` stops the CLI from sending anonymous usage data (`DO_NOT_TRACK=1` does the same). Replace `claude-code` with the identifier of your host, such as `codex`, `cline`, `cursor` or `gemini-cli`, and add `--list` to see what the CLI finds before it installs anything. The CLI needs Node 22.20 or later and uses your normal Git credentials for a private repository. These options come from the `skills` documentation at github.com/vercel-labs/skills. The combination with this repository has not been run end to end.
+`DISABLE_TELEMETRY=1` stops the CLI from sending anonymous usage data (`DO_NOT_TRACK=1` does the same). Replace `claude-code` with the identifier of your host, such as `codex`, `cline`, `cursor` or `gemini-cli`, and add `--list` to see what the CLI finds before it installs anything. The CLI needs Node 22.20 or later. These options come from the `skills` documentation at github.com/vercel-labs/skills. The combination with this repository has not been run end to end.
 
-If you would rather not use that CLI, copy `skills/lurkd` from your clone into your host's skills folder. For Claude Code that is `~/.claude/skills/lurkd/`, and for most other hosts `~/.agents/skills/lurkd/`.
+If you would rather not use that CLI, copy the folder from the installed package (after `npm i -g lurkd` it is at `$(npm root -g)/lurkd/skills/lurkd`) into your host's skills folder: `~/.claude/skills/lurkd/` for Claude Code, and `~/.agents/skills/lurkd/` for most other hosts.
 
 ## Claude Code
 
@@ -76,7 +76,7 @@ Some model APIs reject tool names that contain a dot (`sources.search`). If your
 
 ## If the server will not start
 
-The five named hosts have not yet been tried on real installs, so a host's sandbox may stop the server from starting. In that case run `lurkd start` in a terminal first.
+Codex, Cursor, Cline and Gemini CLI have not been tried on real installs, so a host's sandbox may stop the server from starting. In that case run `lurkd start` in a terminal first, and the host's `lurkd mcp` connects to that server.
 
 ## Sources of these snippets
 

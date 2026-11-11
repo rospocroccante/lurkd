@@ -35,36 +35,94 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-describe('lurkd start, status, stop', () => {
-  it('start, start, status, stop', () => {
+/** The answer to one GET of a page link: its status and whether it set the page's cookie. */
+async function follow(link: string): Promise<[number, boolean]> {
+  const r = await fetch(link, { redirect: 'manual' });
+  await r.body?.cancel();
+  return [r.status, r.headers.getSetCookie().some((c) => c.startsWith('lurkd_page='))];
+}
+
+const LINK = /^http:\/\/127\.0\.0\.1:\d+\/\?n=[A-Za-z0-9_-]{43}$/;
+const PRINTED = 'Open this link in your browser. It works once, within 60 seconds; lurkd open makes another.';
+
+describe('lurkd start, open, status, stop', () => {
+  it('start, start, open, status, stop', async () => {
     const first = lurkd('start', '--no-open');
     expect(first.code).toBe(0);
-    const [line1, url1] = first.stdout.trim().split('\n');
-    expect(line1).toBe(`Started lurkd ${VERSION}.`);
-    expect(url1).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?t=[0-9a-f]{64}$/);
+    const [line1, line2, link1] = first.stdout.trim().split('\n');
+    expect([line1, line2]).toEqual([`Started lurkd ${VERSION}.`, PRINTED]);
+    // D52: a one-time link, never the token.
+    expect(link1).toMatch(LINK);
+    const info = readRunFile(paths)!;
+    expect(first.stdout + first.stderr).not.toContain(info.token);
     expect(fs.statSync(paths.logFile).mode & 0o777).toBe(0o600);
     // The token stays out of the log.
-    const token = new URL(url1!).searchParams.get('t')!;
-    expect(fs.readFileSync(paths.logFile, 'utf8')).not.toContain(token);
+    expect(fs.readFileSync(paths.logFile, 'utf8')).not.toContain(info.token);
+    expect(await follow(link1!)).toEqual([200, true]);
+    expect(await follow(link1!)).toEqual([401, false]);
 
     const second = lurkd('start', '--no-open');
     expect(second.code).toBe(0);
-    expect(second.stdout.trim().split('\n')).toEqual(['lurkd is already running.', url1]);
+    const [running, printed, link2] = second.stdout.trim().split('\n');
+    expect([running, printed]).toEqual(['lurkd is already running.', PRINTED]);
+    expect(link2).toMatch(LINK);
+    expect(link2).not.toBe(link1);
 
+    const open = lurkd('open', '--no-open');
+    expect(open.code).toBe(0);
+    const [printed3, link3] = open.stdout.trim().split('\n');
+    expect(printed3).toBe(PRINTED);
+    expect(link3).toMatch(LINK);
+    expect(open.stdout).not.toContain(info.token);
+    expect(await follow(link3!)).toEqual([200, true]);
+    expect(await follow(link2!)).toEqual([200, true]);
+
+    // Without --no-open, the system opener gets the link as its only argument, never the token.
+    // A stand-in opener on PATH writes down what it was given: no real browser opens.
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'lurkd-opener-'));
+    const record = path.join(bin, 'argv.json');
+    try {
+      const opener = path.join(bin, process.platform === 'darwin' ? 'open' : 'xdg-open');
+      fs.writeFileSync(opener, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
+      for (const cmd of ['open', 'start']) {
+        fs.rmSync(record, { force: true });
+        const r = spawnSync(process.execPath, [CLI, cmd], {
+          cwd: PACKAGE_ROOT,
+          env: { ...process.env, LURKD_HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` },
+          encoding: 'utf8',
+          timeout: 45_000,
+        });
+        expect([cmd, r.status, r.stdout.trim().split('\n').at(-1)]).toEqual([cmd, 0, 'Opened the lurkd page in your browser.']);
+        expect(r.stdout).not.toContain('?n=');
+        const end = Date.now() + 5_000;
+        while (!fs.existsSync(record) && Date.now() < end) await new Promise((res) => setTimeout(res, 50));
+        const argv = JSON.parse(fs.readFileSync(record, 'utf8')) as string[];
+        expect(argv).toHaveLength(1);
+        expect(argv[0]).toMatch(LINK);
+        expect(argv[0]).not.toContain(info.token);
+        expect(await follow(argv[0]!)).toEqual([200, true]);
+      }
+    } finally {
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+
+    const base = `http://127.0.0.1:${info.port}/`;
     const status = lurkd('status', '--json');
     expect(status.code).toBe(0);
     const s = JSON.parse(status.stdout) as Record<string, unknown>;
-    expect(s).toMatchObject({ running: true, url: url1, version: VERSION, browser: 'ready', queueLength: 0 });
-    expect(s.pid).toBe(readRunFile(paths)?.pid);
+    expect(s).toMatchObject({ running: true, url: base, open: 'lurkd open', version: VERSION, browser: 'ready', queueLength: 0 });
+    expect(s.pid).toBe(info.pid);
     expect(Array.isArray(s.attention)).toBe(true);
-    // No forum address reaches status output: the only URL is the lurkd page.
-    expect(status.stdout.split(url1!).join('')).not.toContain('http');
+    // No forum address and no token reach status output: the only URL is the page's address.
+    expect(status.stdout.split(base).join('')).not.toContain('http');
+    expect(status.stdout).not.toContain(info.token);
 
     const text = lurkd('status');
     expect(text.code).toBe(0);
     expect(text.stdout).toContain('lurkd is running.');
-    expect(text.stdout).toContain(url1);
-    expect(text.stdout.split(url1!).join('')).not.toContain('http');
+    expect(text.stdout).toContain(`Page: ${base} (run lurkd open: it opens the page with a link that works once)`);
+    expect(text.stdout.split(base).join('')).not.toContain('http');
+    expect(text.stdout).not.toContain(info.token);
 
     const stop = lurkd('stop');
     expect(stop.code).toBe(0);
@@ -82,7 +140,7 @@ describe('lurkd start, status, stop', () => {
     const downText = lurkd('status');
     expect(downText.code).toBe(1);
     expect(downText.stdout.trim()).toBe('lurkd is not running.');
-  });
+  }, 180_000);
 });
 
 describe('lurkd mcp', () => {
@@ -142,7 +200,7 @@ describe('lurkd mcp', () => {
     for (const line of lines) expect((JSON.parse(line) as { jsonrpc?: string }).jsonrpc).toBe('2.0');
     const result = (JSON.parse(lines[1]!) as { result: { isError?: boolean; content: { text: string }[] } }).result;
     expect(result.isError).toBeFalsy();
-    expect(result.content[0]!.text).toContain('alpha (Alpha forum): never');
+    expect(result.content[0]!.text).toContain('alpha (name "Alpha forum"): never');
     // No token and no forum address in what the agent sees.
     expect(stdout).not.toContain(info!.token);
     expect(result.content[0]!.text).not.toContain('http');

@@ -4,7 +4,7 @@ The agent has six MCP tools. Each has a CLI command that prints the same output,
 
 | Tool | CLI | What it does |
 |---|---|---|
-| `sources.search` | `lurkd sources [query] [--topic t]` | Lists sources by topic or name, with login state and status. |
+| `sources.search` | `lurkd sources [query] [--topic t] [--group name]` | Lists sources by topic, name or one of your groups, with login state and status. |
 | `source.fetch` | `lurkd fetch <source> (--query q \| --url u)` | Searches one source, or reads one thread by address. |
 | `archive.search` | `lurkd search <query> [--source id] [--limit n]` | Searches threads already read, offline. |
 | `session.status` | `lurkd session [source] [--check]` | Shows the login state per source. |
@@ -13,7 +13,27 @@ The agent has six MCP tools. Each has a CLI command that prints the same output,
 
 Each thread comes back as Markdown that keeps the order of the posts, the quotes and the page numbers, and everything read is saved in the local archive.
 
+`sources.search` takes `group`, the name of one of the groups you made on the page, and keeps only its sources; `lurkd sources --group <name>` does the same. An unknown name answers `not_found` with the names of your groups. Only the page makes or changes groups.
+
 `author.signals` gives the join date and the reputation figures the forum serves. Real Discourse forums do not serve a post count in `/u/<name>.json`, so the output shows "Posts: unknown" there.
+
+## Commands without a tool
+
+These have no MCP tool. An agent with a shell can run them, and you can too.
+
+| Command | What it does |
+|---|---|
+| `lurkd start [--no-open]` | Starts the server if it is not running and opens the lurkd page with a one-time link. `--no-open` prints the link instead. |
+| `lurkd open [--no-open]` | Opens the lurkd page with a new one-time link, starting the server if needed. |
+| `lurkd stop` | Stops the server and its browser. |
+| `lurkd status [--json]` | Says whether the server runs, its browser and queue, and the sources that need you. It prints the page address without any token and names `lurkd open` for opening it. |
+| `lurkd mcp [--tool-names=dot\|underscore]` | Serves the six tools over MCP on stdin and stdout. |
+| `lurkd add <url>` | Queues a Discourse or XenForo forum for "Add a forum" on the page. lurkd does not open the address until you press "Analyse" there. |
+| `lurkd import reddit <file>` | Imports one Reddit thread you saved from your own browser into the archive. lurkd reads the local file only. |
+
+`lurkd add` answers in one of three ways: the host is now waiting on the page, it was already waiting (with the address queued first, which lurkd keeps), or a source already covers it. Up to 20 forums can wait at a time. It refuses addresses on your own machine or network, addresses with a user name or password, and Reddit, and it never loads the address itself. See [Adding a site](adding-a-site.md#add-a-forum-from-the-page).
+
+`lurkd import reddit` takes one regular file of at most 20 MB per call, not a folder and not several files. See [Importing a Reddit thread](reddit-import.md).
 
 ## A typical read
 
@@ -26,13 +46,35 @@ Each thread comes back as Markdown that keeps the order of the posts, the quotes
 
 A read stops after 60 requests or 10 minutes, and each source has a daily cap. Ask for a few threads at a time.
 
+If the source's session has expired, the read goes on without login and the output starts with "Read without login: the session of `<source>` has expired", followed by what to do. See [Logging in](logging-in.md#when-a-session-expires).
+
 ## Exit codes
 
-0 done, 2 usage error, 3 you have to act in the lurkd page, 4 a request cap was hit, 1 anything else. `lurkd status` exits 1 when the server is not running.
+0 done, 2 usage error (an invalid request included, such as a file that is not a saved Reddit thread), 3 you have to act in the lurkd page, 4 a request cap was hit, 1 anything else. `lurkd status` exits 1 when the server is not running.
+
+## Error codes
+
+Errors from the tools and the commands start with `Error <code>:` and a message that says what to do next.
+
+| Code | Meaning | Exit |
+|---|---|---|
+| `invalid_request` | The request or a file is not valid; the message names what. | 2 |
+| `needs_login` | The forum asked for a login. Press "Log in" on the page. | 3 |
+| `challenge` | The forum showed a human check. Press "Open window" on the page. | 3 |
+| `needs_acknowledgment` | The source's rules warning is not accepted yet. | 3 |
+| `disabled` | The source is switched off. | 3 |
+| `handoff_in_progress` | A browser window is open on the page; finish it first. | 3 |
+| `run_cap`, `daily_cap` | The run's or the day's request cap was hit. | 4 |
+| `unsupported` | lurkd does not do this at all. Today that means Reddit: reading it live, sampling it, queueing it or analysing it. The message gives the steps to import a thread instead; a thread you imported comes back from the archive. | 1 |
+| `unknown_source`, `not_found` | No source with that id, or no such thread or group. | 1 |
+| `search_unsupported` | The source has no search; give a thread address. | 1 |
+| `off_domain`, `denied_path` | The address is not on the source's domains, or is a path lurkd never opens. | 1 |
+| `extraction_failed` | lurkd could not read the thread from the page, or the engine is not supported. | 1 |
+| `timeout`, `browser_unavailable`, `server_unavailable`, `unauthorized`, `bad_host`, `internal` | Something went wrong in lurkd or on the way to it. | 1 |
 
 ## About --json
 
-The six tool commands and `lurkd status` take `--json`. For `fetch` and `search` that output is not wrapped as untrusted, so forum text in it carries no marker. Use it in scripts. Agents should use the MCP tools or the plain output, which keep the `<untrusted-content>` blocks.
+The six tool commands, `lurkd add`, `lurkd import reddit` and `lurkd status` take `--json`. For `fetch` and `search` that output is not wrapped as untrusted, so forum text in it carries no marker. Use it in scripts. Agents should use the MCP tools or the plain output, which keep the `<untrusted-content>` blocks.
 
 ## Untrusted content
 

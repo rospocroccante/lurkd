@@ -11,6 +11,8 @@ export type ErrorCode =
   | 'off_domain'
   | 'denied_path'
   | 'search_unsupported'
+  // D50: lurkd does not do this at all (Reddit is never read live); the message says what to do instead.
+  | 'unsupported'
   | 'run_cap'
   | 'daily_cap'
   | 'timeout'
@@ -45,6 +47,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   needs_login: 409,
   challenge: 409,
   search_unsupported: 422,
+  unsupported: 422,
   handoff_in_progress: 423,
   run_cap: 429,
   daily_cap: 429,
@@ -70,6 +73,7 @@ export const EXIT_CODE: Record<ErrorCode, number> = {
   off_domain: 1,
   denied_path: 1,
   search_unsupported: 1,
+  unsupported: 1,
   run_cap: 4,
   daily_cap: 4,
   timeout: 1,

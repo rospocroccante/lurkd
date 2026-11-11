@@ -8,7 +8,7 @@ import { playwrightLaunch, type LaunchFn } from '../../src/browser/manager.js';
 import { readRunFile } from '../../src/launcher/runfile.js';
 import { lurkdPaths, VERSION, type LurkdPaths } from '../../src/paths.js';
 import { startServer } from '../../src/server/main.js';
-import { fixture } from '../helpers/common.js';
+import { fixture, pageCookie } from '../helpers/common.js';
 import { html, startFixtureServer, type FixtureServer } from '../helpers/fixture-server.js';
 
 // A real server on 127.0.0.1 with a real Chromium, always headless. The sample handoff test passes
@@ -32,7 +32,7 @@ function tempHome(): { paths: LurkdPaths; seedDir: string; uiDir: string } {
   return { paths: lurkdPaths({ LURKD_HOME: home }), seedDir, uiDir };
 }
 
-async function start(opts: { launch?: LaunchFn } = {}): Promise<{ s: Started; paths: LurkdPaths }> {
+async function start(opts: { launch?: LaunchFn; allowLoopbackForTests?: boolean } = {}): Promise<{ s: Started; paths: LurkdPaths }> {
   const { paths, seedDir, uiDir } = tempHome();
   const s = await startServer({ paths, seedDir, uiDir, ...opts });
   running.push(s);
@@ -75,7 +75,7 @@ afterAll(async () => {
 describe('startServer', () => {
   it('starts, writes the run file, reports a ready browser and cleans up on close', async () => {
     const { s, paths } = await start();
-    expect(s.url).toBe(`http://127.0.0.1:${s.port}/?t=${s.token}`);
+    expect(s.url).toBe(`http://127.0.0.1:${s.port}/`);
     expect(s.token).toMatch(/^[0-9a-f]{64}$/);
     const info = readRunFile(paths);
     expect(info).toMatchObject({ pid: process.pid, port: s.port, token: s.token, version: VERSION });
@@ -124,7 +124,8 @@ describe('startServer', () => {
 
   it('runs a sample request through the page handoff (headless) and back', async () => {
     const headless: LaunchFn = (dir) => playwrightLaunch(dir, { headless: true });
-    const { s } = await start({ launch: headless });
+    // M2: a sample request is recorded under the address rules of "Analyse"; the fixture forum is on 127.0.0.1.
+    const { s } = await start({ launch: headless, allowLoopbackForTests: true });
     const base = `http://127.0.0.1:${s.port}`;
     const auth = { authorization: `Bearer ${s.token}`, 'content-type': 'application/json' };
     const url = `${fixtures.origin}/threads/sample.55/`;
@@ -132,9 +133,7 @@ describe('startServer', () => {
     const asked = await fetch(`${base}/api/sample`, { method: 'POST', headers: auth, body: JSON.stringify({ url }) });
     expect(((await asked.json()) as { status: string }).status).toBe('needs_user');
 
-    const login = await fetch(`${base}/?t=${s.token}`, { redirect: 'manual' });
-    expect(login.status).toBe(302);
-    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    const cookie = await pageCookie(s.port, s.token);
     const uiHeaders = { cookie, origin: base, 'content-type': 'application/json' };
 
     const state = async () => (await (await fetch(`${base}/api/state`, { headers: { cookie } })).json()) as { browser: { state: string }; samplesPending: { host: string }[] };

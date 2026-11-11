@@ -1,6 +1,6 @@
 import type { BrowserContext, Request, Route, WebSocketRoute } from 'playwright';
 import type { FetchKind, FetchLogEntry } from '../archive/state.js';
-import { deniedBy, isAllowedHost, matchesReadEndpoint } from '../policy/urls.js';
+import { deniedBy, isAllowedHost, isRedditHost, matchesReadEndpoint } from '../policy/urls.js';
 import type { SourceConfig } from '../sources/schema.js';
 
 // The read-only guard (D5, D14, D35). Every request of the headless browser passes through
@@ -58,6 +58,8 @@ export function guardDecision(scope: GuardScope, method: string, url: string): G
     return block('invalid_url');
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return block(`scheme:${u.protocol.replace(/:$/, '')}`);
+  // D50: Reddit is never contacted, not even for an image a forum post embeds.
+  if (isRedditHost(u.hostname)) return block('reddit');
   const beacon = method === 'POST' ? KNOWN_BEACONS.find((b) => u.pathname.startsWith(b.pathPrefix)) : undefined;
   const blocked = (note?: string) => block(beacon ? `beacon:${beacon.name}` : note);
 

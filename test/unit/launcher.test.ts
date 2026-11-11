@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { checkHealth, ensureBrowserInstalled, ensureServer, isOurServer, SERVER_ENTRIES, serverUrl, stopServer } from '../../src/launcher/launcher.js';
+import { checkHealth, ensureBrowserInstalled, ensureServer, isOurServer, openerCommand, openPage, SERVER_ENTRIES, serverUrl, stopServer } from '../../src/launcher/launcher.js';
 import { readRunFile, writeRunFile, type RunInfo } from '../../src/launcher/runfile.js';
 import { ensureHome, lurkdPaths, type LurkdPaths } from '../../src/paths.js';
 
@@ -29,7 +29,10 @@ function listen(handler: http.RequestListener): Promise<{ server: http.Server; p
  * A stub lurkd: /health with the Bearer token, /api/shutdown removes the run file and ends `pid`
  * (or, with `hang`, accepts the request and does nothing).
  */
-async function stubServer(paths: LurkdPaths, opts: { pid?: number; onShutdown?: () => void; hang?: boolean } = {}): Promise<RunInfo> {
+async function stubServer(
+  paths: LurkdPaths,
+  opts: { pid?: number; onShutdown?: () => void; hang?: boolean; pageLink?: (port: number) => string } = {},
+): Promise<RunInfo> {
   const token = `${Math.random().toString(16).slice(2)}`.padEnd(64, '0');
   const { server, port } = await listen((req, res) => {
     if (req.headers.authorization !== `Bearer ${token}`) {
@@ -38,6 +41,11 @@ async function stubServer(paths: LurkdPaths, opts: { pid?: number; onShutdown?: 
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, version: '0.1.0', pid: opts.pid ?? process.pid, browser: 'ready' }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/page-link') {
+      const url = opts.pageLink?.(port) ?? `http://127.0.0.1:${port}/?n=${'N'.repeat(43)}`;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ url, expiresInSeconds: 60 }));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/shutdown') {
@@ -148,8 +156,44 @@ describe('launcher', () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  it('builds the page address from the run file', () => {
-    expect(serverUrl({ pid: 1, port: 4321, token: 'abc', version: '0.1.0', startedAt: 'x' })).toBe('http://127.0.0.1:4321/?t=abc');
+  it('builds the page address from the run file, without the token (D52)', () => {
+    expect(serverUrl({ pid: 1, port: 4321, token: 'abc', version: '0.1.0', startedAt: 'x' })).toBe('http://127.0.0.1:4321/');
+  });
+
+  it('opens the page with a one-time link the server mints, never with the token (D52)', async () => {
+    const info = await stubServer(paths);
+    const openUrl = vi.fn(() => true);
+    const a = await openPage(info, { open: true, openUrl });
+    expect(a).toEqual({ link: `http://127.0.0.1:${info.port}/?n=${'N'.repeat(43)}`, opened: true });
+    expect(openUrl.mock.calls).toEqual([[a.link]]);
+    expect(a.link).not.toContain(info.token);
+    // --no-open: the link only, for the caller to print.
+    const b = await openPage(info, { open: false, openUrl });
+    expect(b.opened).toBe(false);
+    expect(openUrl).toHaveBeenCalledTimes(1);
+    // No way to open a browser here: the caller prints the link.
+    expect((await openPage(info, { open: true, openUrl: () => false })).opened).toBe(false);
+  });
+
+  it('refuses a page link that is not a one-time link of this server', async () => {
+    for (const bad of [
+      (port: number) => `http://127.0.0.1:${port}/?t=abc`,
+      (port: number) => `http://evil.example:${port}/?n=${'N'.repeat(43)}`,
+      (port: number) => `http://127.0.0.1:${port + 1}/?n=${'N'.repeat(43)}`,
+      (port: number) => `http://127.0.0.1:${port}/?n=short`,
+    ]) {
+      const info = await stubServer(paths, { pageLink: bad });
+      const openUrl = vi.fn(() => true);
+      await expect(openPage(info, { open: true, openUrl })).rejects.toMatchObject({ code: 'server_unavailable' });
+      expect(openUrl).not.toHaveBeenCalled();
+    }
+  });
+
+  it('hands the system opener the link alone as its only argument', () => {
+    const link = `http://127.0.0.1:4321/?n=${'N'.repeat(43)}`;
+    expect(openerCommand(link, 'darwin')).toEqual({ cmd: 'open', args: [link] });
+    expect(openerCommand(link, 'linux')).toEqual({ cmd: 'xdg-open', args: [link] });
+    expect(openerCommand(link, 'win32')).toBeNull();
   });
 
   it('checks /health with the Bearer token', async () => {
@@ -178,8 +222,8 @@ describe('launcher', () => {
 
   it('starts one server when two callers race (Review Focus 5)', async () => {
     const [a, b] = await Promise.all([
-      ensureServer(paths, { open: false, spawn, installBrowser: noInstall }),
-      ensureServer(paths, { open: false, spawn, installBrowser: noInstall }),
+      ensureServer(paths, { spawn, installBrowser: noInstall }),
+      ensureServer(paths, { spawn, installBrowser: noInstall }),
     ]);
     expect(spawnCalls).toBe(1);
     expect(serverUrl(a.info)).toBe(serverUrl(b.info));
@@ -192,7 +236,7 @@ describe('launcher', () => {
     ensureHome(paths);
     const info = await stubServer(paths);
     writeRunFile(paths, info);
-    const r = await ensureServer(paths, { open: false, spawn, installBrowser: noInstall });
+    const r = await ensureServer(paths, { spawn, installBrowser: noInstall });
     expect(r).toEqual({ info, started: false });
     expect(spawnCalls).toBe(0);
   });
@@ -201,7 +245,7 @@ describe('launcher', () => {
     ensureHome(paths);
     const stale: RunInfo = { pid: 999_999, port: await deadPort(), token: 'a'.repeat(64), version: '0.1.0', startedAt: new Date().toISOString() };
     writeRunFile(paths, stale);
-    const r = await ensureServer(paths, { open: false, spawn, installBrowser: noInstall });
+    const r = await ensureServer(paths, { spawn, installBrowser: noInstall });
     expect(r.started).toBe(true);
     expect(spawnCalls).toBe(1);
     expect(r.info.port).not.toBe(stale.port);
@@ -212,7 +256,7 @@ describe('launcher', () => {
     ensureHome(paths);
     const { port } = await listen((_req, res) => res.writeHead(401).end('{"error":"unauthorized"}'));
     writeRunFile(paths, { pid: process.pid, port, token: 'b'.repeat(64), version: '0.1.0', startedAt: new Date().toISOString() });
-    const r = await ensureServer(paths, { open: false, spawn, installBrowser: noInstall });
+    const r = await ensureServer(paths, { spawn, installBrowser: noInstall });
     expect(r.started).toBe(true);
     expect(r.info.port).not.toBe(port);
   });
@@ -221,7 +265,7 @@ describe('launcher', () => {
     ensureHome(paths);
     const foreign = await foreignServer();
     writeRunFile(paths, { pid: await deadPid(), port: foreign.port, token: 'e'.repeat(64), version: '0.1.0', startedAt: new Date().toISOString() });
-    const r = await ensureServer(paths, { open: false, spawn, installBrowser: noInstall });
+    const r = await ensureServer(paths, { spawn, installBrowser: noInstall });
     expect(r.started).toBe(true);
     expect(r.info.port).not.toBe(foreign.port);
   });
@@ -232,7 +276,7 @@ describe('launcher', () => {
     const stalled: RunInfo = { pid: fake.pid!, port: await deadPort(), token: 'f'.repeat(64), version: '0.1.0', startedAt: new Date().toISOString() };
     writeRunFile(paths, stalled);
     const t0 = Date.now();
-    await expect(ensureServer(paths, { open: false, spawn, installBrowser: noInstall, stalledMs: 800 })).rejects.toMatchObject({
+    await expect(ensureServer(paths, { spawn, installBrowser: noInstall, stalledMs: 800 })).rejects.toMatchObject({
       code: 'server_unavailable',
       message: expect.stringContaining(`pid ${fake.pid}`),
     });
@@ -248,7 +292,7 @@ describe('launcher', () => {
     writeRunFile(paths, { pid: fake.pid!, port: await deadPort(), token: 'f'.repeat(64), version: '0.1.0', startedAt: new Date().toISOString() });
     const back = await stubServer(paths, { pid: fake.pid! });
     setTimeout(() => writeRunFile(paths, back), 400);
-    const r = await ensureServer(paths, { open: false, spawn, installBrowser: noInstall, stalledMs: 3_000 });
+    const r = await ensureServer(paths, { spawn, installBrowser: noInstall, stalledMs: 3_000 });
     expect(r).toEqual({ info: back, started: false });
     expect(spawnCalls).toBe(0);
   });
@@ -257,7 +301,7 @@ describe('launcher', () => {
     ensureHome(paths);
     fs.writeFileSync(paths.startLock, `${await deadPid()} crashed\n`);
     const t0 = Date.now();
-    const r = await ensureServer(paths, { open: false, spawn, waitMs: 5_000, installBrowser: noInstall });
+    const r = await ensureServer(paths, { spawn, waitMs: 5_000, installBrowser: noInstall });
     expect(r.started).toBe(true);
     expect(Date.now() - t0).toBeLessThan(3_000);
   });
@@ -265,7 +309,7 @@ describe('launcher', () => {
   it('names the lock file when a held lock blocks the start', async () => {
     ensureHome(paths);
     fs.writeFileSync(paths.startLock, `${process.pid} other\n`);
-    await expect(ensureServer(paths, { open: false, spawn, waitMs: 600, installBrowser: noInstall })).rejects.toMatchObject({
+    await expect(ensureServer(paths, { spawn, waitMs: 600, installBrowser: noInstall })).rejects.toMatchObject({
       code: 'server_unavailable',
       message: expect.stringContaining(paths.startLock),
     });
@@ -277,7 +321,7 @@ describe('launcher', () => {
     fs.writeFileSync(paths.startLock, '1 old');
     const past = new Date(Date.now() - 31_000);
     fs.utimesSync(paths.startLock, past, past);
-    const r = await ensureServer(paths, { open: false, spawn, waitMs: 3_000, installBrowser: noInstall });
+    const r = await ensureServer(paths, { spawn, waitMs: 3_000, installBrowser: noInstall });
     expect(r.started).toBe(true);
     expect(spawnCalls).toBe(1);
   });
@@ -285,7 +329,7 @@ describe('launcher', () => {
   it('waits for the caller that holds a fresh lock instead of spawning', async () => {
     ensureHome(paths);
     fs.writeFileSync(paths.startLock, '1 other');
-    const pending = ensureServer(paths, { open: false, spawn, installBrowser: noInstall });
+    const pending = ensureServer(paths, { spawn, installBrowser: noInstall });
     const info = await stubServer(paths);
     setTimeout(() => writeRunFile(paths, info), 300);
     const r = await pending;
@@ -297,26 +341,17 @@ describe('launcher', () => {
 
   it('fails with server_unavailable when the server never answers, and releases the lock', async () => {
     const install = vi.fn(noInstall);
-    await expect(ensureServer(paths, { open: false, spawn: () => {}, waitMs: 600, installBrowser: install })).rejects.toMatchObject({
+    await expect(ensureServer(paths, { spawn: () => {}, waitMs: 600, installBrowser: install })).rejects.toMatchObject({
       code: 'server_unavailable',
     });
     expect(install).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(paths.startLock)).toBe(false);
   });
 
-  it('opens the page only when it started the server', async () => {
-    const openUrl = vi.fn();
-    const a = await ensureServer(paths, { open: true, spawn, installBrowser: noInstall, openUrl });
-    const b = await ensureServer(paths, { open: true, spawn, installBrowser: noInstall, openUrl });
-    expect([a.started, b.started]).toEqual([true, false]);
-    expect(openUrl).toHaveBeenCalledTimes(1);
-    expect(openUrl).toHaveBeenCalledWith(serverUrl(a.info));
-  });
-
   it('installs the browser only when it starts a server', async () => {
     const install = vi.fn(noInstall);
-    await ensureServer(paths, { open: false, spawn, installBrowser: install });
-    await ensureServer(paths, { open: false, spawn, installBrowser: install });
+    await ensureServer(paths, { spawn, installBrowser: install });
+    await ensureServer(paths, { spawn, installBrowser: install });
     expect(install).toHaveBeenCalledTimes(1);
   });
 

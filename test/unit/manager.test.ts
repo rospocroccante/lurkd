@@ -481,6 +481,34 @@ describe('BrowserManager', () => {
     await begin;
   });
 
+  it('names the source of a handoff whose window is still launching, and only then', async () => {
+    let release!: () => void;
+    const launching = new Promise<void>((r) => (release = r));
+    const f = fakeLauncher();
+    const slow: LaunchFn = async (dir, o) => {
+      if (!o.headless) await launching;
+      return f.launch(dir, o);
+    };
+    const m = manager({ ...f, launch: slow });
+    await m.start();
+    expect(m.pendingHandoffSourceId).toBeNull();
+    const begin = m.beginHandoff({ sourceId: 'a', url: 'https://f.example/login', purpose: 'login' });
+    await wait(0);
+    expect(m.handoff).toBeNull();
+    expect(m.pendingHandoffSourceId).toBe('a');
+    release();
+    await begin;
+    expect(m.handoff?.sourceId).toBe('a');
+    expect(m.pendingHandoffSourceId).toBeNull();
+    await m.endHandoff();
+    // A launch that fails leaves nothing pending.
+    const g = fakeLauncher({ failWhen: (_n, headless) => !headless });
+    const n = manager(g);
+    await n.start();
+    await expect(n.beginHandoff({ sourceId: 'b', url: 'https://f.example/login', purpose: 'login' })).rejects.toMatchObject({ code: 'browser_unavailable' });
+    expect(n.pendingHandoffSourceId).toBeNull();
+  });
+
   it('refuses a handoff while a page is in use', async () => {
     const f = fakeLauncher();
     const m = manager(f);

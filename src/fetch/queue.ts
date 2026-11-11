@@ -3,17 +3,18 @@ import { formatError } from '../client/format.js';
 import { LurkdError } from '../errors.js';
 
 // The serial job queue of the server: one job at a time, in arrival order, for every source.
-// Everything that opens the headless browser (fetch, session check, author signals, sample) runs
-// as a job, so at most one page and one page worker are alive at any time (Task 12 relies on it).
+// Everything that opens the headless browser (fetch, session check, author signals, sample,
+// analyse) runs as a job, so at most one page and one page worker are alive at any time (Task 12
+// relies on it).
 
-export type JobKind = 'fetch' | 'session' | 'signals' | 'sample';
+export type JobKind = 'fetch' | 'session' | 'signals' | 'sample' | 'analyse';
 
 export interface JobProgress {
   jobId: string;
   sourceId: string;
   kind: JobKind;
   state: 'queued' | 'running' | 'done' | 'stopped' | 'failed';
-  phase: 'queued' | 'search' | 'thread' | 'session' | 'signals' | 'sample' | 'done';
+  phase: 'queued' | 'search' | 'thread' | 'session' | 'signals' | 'sample' | 'analyse' | 'done';
   threadIndex: number;
   threadCount: number;
   postsFetched: number;

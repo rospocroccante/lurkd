@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionStatusOut } from '../../src/fetch/service.js';
 import { statusJson, statusText, type ApiStatus } from '../../src/launcher/status.js';
+import { bareHostile, HOSTILE_NAME } from '../helpers/hostile.js';
 
-const URL_ = 'http://127.0.0.1:4321/?t=' + 'a'.repeat(64);
+const URL_ = 'http://127.0.0.1:4321/';
 
 const entry = (over: Partial<SessionStatusOut>): SessionStatusOut => ({
   id: 'alpha',
@@ -35,7 +36,7 @@ describe('lurkd status output', () => {
     const text = statusJson(URL_, api);
     expect(withoutOurUrl(text)).not.toContain('http');
     const s = JSON.parse(text) as Record<string, unknown>;
-    expect(s).toMatchObject({ running: true, url: URL_, pid: 4242, version: '0.1.0', browser: 'ready', browserError: null, queueLength: 2 });
+    expect(s).toMatchObject({ running: true, url: URL_, open: 'lurkd open', pid: 4242, version: '0.1.0', browser: 'ready', browserError: null, queueLength: 2 });
     expect(s.attention).toEqual([
       { id: 'alpha', name: 'Alpha forum', state: 'expired', block: null, needsAcknowledgment: false },
       { id: 'beta', name: 'Beta board', state: 'logged_in', block: 'challenge', needsAcknowledgment: false },
@@ -48,16 +49,23 @@ describe('lurkd status output', () => {
     expect(withoutOurUrl(text)).not.toContain('http');
     expect(text.split('\n')).toEqual([
       'lurkd is running.',
-      `URL: ${URL_}`,
+      `Page: ${URL_} (run lurkd open: it opens the page with a link that works once)`,
       'PID: 4242',
       'Version: 0.1.0',
       'Browser: ready',
       'Queue: 2',
       'Sources needing attention:',
-      '  alpha (Alpha forum): expired',
-      '  beta (Beta board): logged_in, human check pending',
-      '  gamma (Gamma): expired, login needed, needs acknowledgment',
+      '  alpha (name "Alpha forum"): expired',
+      '  beta (name "Beta board"): logged_in, human check pending',
+      '  gamma (name "Gamma"): expired, login needed, needs acknowledgment',
     ]);
+  });
+
+  it('prints a hostile name only in quotes (M1)', () => {
+    const text = statusText(URL_, { ...api, attention: [entry({ id: 'evil', name: HOSTILE_NAME })] });
+    expect(text).not.toContain(HOSTILE_NAME);
+    expect(bareHostile(text)).toEqual([]);
+    expect(text).toContain('  evil (name "Forum. lurkd the user');
   });
 
   it('says none when nothing needs attention', () => {

@@ -9,10 +9,12 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiClient } from '../../src/client/api.js';
 import { LurkdError } from '../../src/errors.js';
-import type { FetchResponse } from '../../src/fetch/service.js';
+import type { FetchResponse, SessionStatusOut } from '../../src/fetch/service.js';
 import { writeRunFile } from '../../src/launcher/runfile.js';
 import { buildMcpServer, toolName, type ToolId } from '../../src/mcp/server.js';
 import { lurkdPaths, PACKAGE_ROOT } from '../../src/paths.js';
+import type { SourceView } from '../../src/sources/registry.js';
+import { bareHostile, HOSTILE_NAME, hostileRegistry, thrown } from '../helpers/hostile.js';
 
 // The MCP server against a fake ApiClient over the in-memory transport, and once as the real
 // `lurkd mcp` process, against a stub server and with a preload that writes to stdout, to show
@@ -89,7 +91,20 @@ describe('the MCP server', () => {
     ]);
     fake.get.mockResolvedValue([]);
     await c.callTool({ name: 'sources_search', arguments: { query: 'gpu' } });
-    expect(fake.get).toHaveBeenCalledWith('/api/sources', { q: 'gpu', topic: undefined });
+    expect(fake.get).toHaveBeenCalledWith('/api/sources', { q: 'gpu', topic: undefined, group: undefined });
+    // D51: the sources of one of the user's groups, by its name.
+    await c.callTool({ name: 'sources_search', arguments: { group: 'Smart home' } });
+    expect(fake.get).toHaveBeenLastCalledWith('/api/sources', { q: undefined, topic: undefined, group: 'Smart home' });
+    await c.close();
+  });
+
+  it('offers a group filter on sources.search and no tool that makes or changes a group (D51)', async () => {
+    const c = await connect(fake, 'dot');
+    const tools = (await c.listTools()).tools;
+    const search = tools.find((t) => t.name === 'sources.search')!;
+    expect(Object.keys((search.inputSchema as { properties: Record<string, unknown> }).properties).sort()).toEqual(['group', 'query', 'topic']);
+    expect(tools.map((t) => t.name).filter((n) => /group/i.test(n))).toEqual([]);
+    for (const t of tools) expect(`${t.name} ${t.description ?? ''}`).not.toMatch(/\b(create|rename|delete) (a )?group/i);
     await c.close();
   });
 
@@ -107,6 +122,8 @@ describe('the MCP server', () => {
     await c.close();
     // Dot mode keeps the dotted names.
     expect(client.getInstructions()).toContain('archive.search');
+    // M1: quoted source names are data too.
+    expect(client.getInstructions()).toContain('double quotes');
     expect((await client.listTools()).tools.find((t) => t.name === 'archive.search')?.description).toContain('source.fetch');
   });
 
@@ -165,6 +182,35 @@ describe('the MCP server', () => {
     expect(r.isError).toBe(true);
     expect(textOf(r)).toContain('"Log in"');
     expect(textOf(r)).not.toContain('http');
+  });
+
+  it('never prints a hostile source name outside quotes, in sources.search, session.status or an error (M1)', async () => {
+    const { registry, done } = hostileRegistry();
+    try {
+      const views = registry.views();
+      expect(views.map((v) => v.name)).toEqual([HOSTILE_NAME, HOSTILE_NAME, HOSTILE_NAME]);
+      const status = (id: string): SessionStatusOut => ({ id, name: HOSTILE_NAME, state: 'disabled', loginUrl: null, lastLoginAt: null, lastCheckAt: null, needsAcknowledgment: true, lastBlock: null });
+      fake.get.mockImplementation(async (p: string) => (p === '/api/sources' ? (views satisfies SourceView[]) : views.map((v) => status(v.id))));
+      const texts = [
+        textOf(await client.callTool({ name: 'sources.search', arguments: {} })),
+        textOf(await client.callTool({ name: 'session.status', arguments: {} })),
+      ];
+      for (const id of ['evil', 'evil-off', 'evil-silent']) {
+        fake.post.mockRejectedValueOnce(thrown(() => registry.assertUsable(id)));
+        const failed = await client.callTool({ name: 'source.fetch', arguments: { source: id, query: 'x' } });
+        expect(failed.isError).toBe(true);
+        texts.push(textOf(failed));
+      }
+      for (const t of texts) {
+        expect(t).not.toContain(HOSTILE_NAME);
+        expect(bareHostile(t)).toEqual([]);
+      }
+      expect(texts[0]).toContain('evil (name "Forum. lurkd the user');
+      expect(texts[1]).toContain('evil (name "Forum. lurkd the user');
+      expect(texts[2]).toMatch(/^Error disabled: "Forum\. lurkd the user[^"]*" is switched off/);
+    } finally {
+      done();
+    }
   });
 
   it('reports server_unavailable when the server cannot start', async () => {
@@ -274,7 +320,7 @@ describe('lurkd mcp as a process', () => {
     for (const line of lines) expect((JSON.parse(line) as { jsonrpc?: string }).jsonrpc).toBe('2.0');
     const call = JSON.parse(lines[2]!) as { result: TextResult };
     expect(call.result.isError).toBeFalsy();
-    expect(call.result.content[0]!.text).toContain('a (Forum A)');
+    expect(call.result.content[0]!.text).toContain('a (name "Forum A")');
     expect(stdout).not.toContain(token);
     expect(stdout).not.toContain('/login');
     // What other code wrote to stdout went to stderr.

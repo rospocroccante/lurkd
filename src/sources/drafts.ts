@@ -79,6 +79,150 @@ export class SampleStore {
   }
 }
 
+/** At most this many hosts wait in the "Add a forum" queue: an agent cannot flood the lurkd page. */
+export const MAX_ADD_REQUESTS = 20;
+
+interface AddRequestRow {
+  host: string;
+  url: string;
+  requested_at: string;
+}
+
+/**
+ * Forums `lurkd add` queued for the lurkd page (D45), one per host. Nothing here opens an address:
+ * the user presses "Analyse" on the page, and only that loads it. A host keeps the first address
+ * it was queued with, so the address the page shows cannot change under the user. A request goes
+ * away when the user dismisses it, a draft is saved or rejected for its host, or a source already
+ * claims it.
+ */
+export class AddRequestStore {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly now: Clock = () => new Date(),
+  ) {}
+
+  /**
+   * Queues `url` for `host` and answers with the address now waiting for it: a host already
+   * waiting keeps its first address (`kept` true when `url` differs from it). `invalid_request`
+   * when the queue is full.
+   */
+  request(host: string, url: string): { url: string; kept: boolean } {
+    const key = hostKey(host);
+    return this.db
+      .transaction(() => {
+        const waiting = this.db.prepare('SELECT url FROM add_requests WHERE host = ?').get(key) as { url: string } | undefined;
+        if (waiting) return { url: waiting.url, kept: waiting.url !== url };
+        const count = (this.db.prepare('SELECT count(*) AS n FROM add_requests').get() as { n: number }).n;
+        if (count >= MAX_ADD_REQUESTS)
+          throw new LurkdError(
+            'invalid_request',
+            `${MAX_ADD_REQUESTS} forums are already waiting on the lurkd page. Ask the user to analyse or dismiss some of them under "Add a forum" first.`,
+          );
+        this.db.prepare('INSERT INTO add_requests (host, url, requested_at) VALUES (?, ?, ?)').run(key, url, this.now().toISOString());
+        return { url, kept: false };
+      })
+      .immediate();
+  }
+
+  /** The queued forums, oldest first. */
+  pending(): { host: string; url: string; requestedAt: string }[] {
+    const rows = this.db.prepare('SELECT host, url, requested_at FROM add_requests ORDER BY requested_at, host').all() as AddRequestRow[];
+    return rows.map((r) => ({ host: r.host, url: r.url, requestedAt: r.requested_at }));
+  }
+
+  /** Drops the request of `host`; false when none was waiting. */
+  remove(host: string): boolean {
+    return this.db.prepare('DELETE FROM add_requests WHERE host = ?').run(hostKey(host)).changes > 0;
+  }
+}
+
+/** One forum whose rules forbid automated access (D49). */
+export interface ForbiddenEntry {
+  host: string;
+  /** The forum's name as the analysed page gave it: forum text. */
+  name: string;
+  engine: 'discourse' | 'xenforo' | null;
+  baseUrl: string;
+  loginUrl: string | null;
+  signupUrl: string | null;
+  searchUrl: string | null;
+  /** The rules page the sentence is on. */
+  ruleUrl: string;
+  /** The exact sentence that forbids automated access: forum text. */
+  sentence: string;
+  foundAt: string;
+}
+
+interface ForbiddenRow {
+  host: string;
+  name: string;
+  engine: ForbiddenEntry['engine'];
+  base_url: string;
+  login_url: string | null;
+  signup_url: string | null;
+  search_url: string | null;
+  rule_url: string;
+  sentence: string;
+  found_at: string;
+}
+
+/**
+ * Forums whose rules forbid automated access, as "Analyse" found them on the lurkd page (D49), one
+ * per host; a later clause for the same host replaces the earlier one. Only the page's routes
+ * write here: the user dismisses an entry, or drafts the source from it with "Add anyway".
+ */
+export class ForbiddenLog {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly now: Clock = () => new Date(),
+  ) {}
+
+  /** Stores the clause found for `e.host`, replacing any earlier one, and returns the entry. */
+  record(e: Omit<ForbiddenEntry, 'foundAt'>): ForbiddenEntry {
+    const host = hostKey(e.host);
+    this.db
+      .prepare(
+        `INSERT INTO forbidden_log (host, name, engine, base_url, login_url, signup_url, search_url, rule_url, sentence, found_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (host) DO UPDATE SET name = excluded.name, engine = excluded.engine, base_url = excluded.base_url,
+           login_url = excluded.login_url, signup_url = excluded.signup_url, search_url = excluded.search_url,
+           rule_url = excluded.rule_url, sentence = excluded.sentence, found_at = excluded.found_at`,
+      )
+      .run(host, e.name, e.engine, e.baseUrl, e.loginUrl, e.signupUrl, e.searchUrl, e.ruleUrl, e.sentence, this.now().toISOString());
+    return this.get(host)!;
+  }
+
+  /** Every entry, the most recent first. */
+  list(): ForbiddenEntry[] {
+    return (this.db.prepare('SELECT * FROM forbidden_log ORDER BY found_at DESC, host').all() as ForbiddenRow[]).map(toForbidden);
+  }
+
+  get(host: string): ForbiddenEntry | null {
+    const r = this.db.prepare('SELECT * FROM forbidden_log WHERE host = ?').get(hostKey(host)) as ForbiddenRow | undefined;
+    return r ? toForbidden(r) : null;
+  }
+
+  /** Drops the entry of `host`; false when there was none. */
+  remove(host: string): boolean {
+    return this.db.prepare('DELETE FROM forbidden_log WHERE host = ?').run(hostKey(host)).changes > 0;
+  }
+}
+
+function toForbidden(r: ForbiddenRow): ForbiddenEntry {
+  return {
+    host: r.host,
+    name: r.name,
+    engine: r.engine,
+    baseUrl: r.base_url,
+    loginUrl: r.login_url,
+    signupUrl: r.signup_url,
+    searchUrl: r.search_url,
+    ruleUrl: r.rule_url,
+    sentence: r.sentence,
+    foundAt: r.found_at,
+  };
+}
+
 export interface DraftView {
   id: number;
   sourceId: string;
@@ -178,10 +322,11 @@ export class DraftStore {
     return this.registry.get(sourceId);
   }
 
-  /** Marks a pending draft rejected; `not_found` for an unknown id, `invalid_request` when not pending. */
-  reject(id: number): void {
+  /** Marks a pending draft rejected and returns it; `not_found` for an unknown id, `invalid_request` when not pending. */
+  reject(id: number): DraftView {
     this.pendingRow(id);
     this.db.prepare("UPDATE drafts SET state = 'rejected' WHERE id = ?").run(id);
+    return this.view(id);
   }
 
   private view(id: number): DraftView {
@@ -318,13 +463,14 @@ function selectorErrors(source: SourceConfig, file: string): string[] {
 
 /**
  * What the user must look at before approving, in this order: every read endpoint as
- * `POST <path>: <note>`, the domains, `login_url`, `search_url`, `allow_beacons: true` when set,
- * and the policy with its rule.
+ * `POST <path>: <note>`, the domains, `login_url`, `signup_url` (D47: the handoff window opens it),
+ * `search_url`, `allow_beacons: true` when set, and the policy with its rule.
  */
 function warningsFor(s: SourceConfig): string[] {
   const out = s.read_endpoints.map((e) => `POST ${e.path}: ${oneLine(e.note)}`);
   out.push(`domains: ${s.domains.join(', ')}`);
   if (s.login_url !== null) out.push(`login_url: ${s.login_url}`);
+  if (s.signup_url !== null) out.push(`signup_url: ${s.signup_url}`);
   if (s.search_url !== null) out.push(`search_url: ${s.search_url}`);
   if (s.allow_beacons) out.push('allow_beacons: true');
   const { policy, rule_quote, rule_url } = s.automation;

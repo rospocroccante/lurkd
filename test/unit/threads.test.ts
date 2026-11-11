@@ -70,6 +70,7 @@ describe('ThreadStore', () => {
       extraction: 'discourse-json',
       quality: 'full',
       fetchedAt: NOW,
+      imported: null,
     });
     expect(got!.posts.map((p) => p.number)).toEqual([1, 2, 3]);
     expect(got!.posts[0]).toEqual(post(1));
@@ -144,6 +145,15 @@ describe('ThreadStore', () => {
     expect(ftsCount(db)).toBe(2);
     expect(count(db, 'posts')).toBe(2);
     expect(count(db, 'threads')).toBe(1);
+  });
+
+  it('keeps who imported a thread and the date of the import it replaced, and clears both on a save without them (D50)', () => {
+    store.save('reddit-import', thread({ engine: 'import' }), NOW, { via: 'page', replacedImportAt: null });
+    expect(store.getByUrl('https://f.example/t/1')!.thread.imported).toEqual({ via: 'page', replacedImportAt: null });
+    store.save('reddit-import', thread({ engine: 'import' }), NOW, { via: 'api', replacedImportAt: daysAgo(1) });
+    expect(store.getByUrl('https://f.example/t/1')!.thread.imported).toEqual({ via: 'api', replacedImportAt: daysAgo(1) });
+    store.save(SRC, thread(), NOW);
+    expect(store.getByUrl('https://f.example/t/1')!.thread.imported).toBeNull();
   });
 
   it('rolls back a save that fails half way', () => {

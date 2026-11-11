@@ -43,3 +43,30 @@ export function range(from: number, to: number): number[] {
   for (let i = from; i <= to; i++) out.push(i);
   return out;
 }
+
+/**
+ * D52: a one-time link to the lurkd page of a running server, minted as `lurkd open` mints it:
+ * POST /api/page-link with the token as a Bearer header and no Origin.
+ */
+export async function pageLink(port: number, token: string): Promise<string> {
+  const r = await fetch(`http://127.0.0.1:${port}/api/page-link`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+  const url = r.ok ? ((await r.json()) as { url?: unknown }).url : undefined;
+  if (typeof url !== 'string' || !url.startsWith(`http://127.0.0.1:${port}/?n=`)) throw new Error(`no page link from /api/page-link (HTTP ${r.status})`);
+  return url;
+}
+
+/**
+ * D52: the lurkd page's cookie for a running server, got the way a browser gets it: open a
+ * one-time link and keep the cookie of the answer, which holds the page secret (never the token).
+ */
+export async function pageCookie(port: number, token: string): Promise<string> {
+  const r = await fetch(await pageLink(port, token), { redirect: 'manual' });
+  await r.body?.cancel();
+  const cookie = r.headers
+    .getSetCookie()
+    .find((c) => c.startsWith('lurkd_page='))
+    ?.split(';')[0];
+  // A server started with a stand-in uiDir answers 404 for the missing index.html, cookie and all.
+  if (cookie === undefined) throw new Error(`no page cookie from the page link (HTTP ${r.status})`);
+  return cookie;
+}

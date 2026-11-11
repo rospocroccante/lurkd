@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { createApiClient } from '../client/api.js';
 import { MIRROR_COMMANDS, MIRROR_HELP, runCommand } from '../cli/commands.js';
 import { EXIT_CODE, LurkdError } from '../errors.js';
-import { checkHealth, ensureServer, serverUrl, stopServer } from '../launcher/launcher.js';
+import { checkHealth, ensureServer, openPage, serverUrl, stopServer } from '../launcher/launcher.js';
 import { readRunFile, type RunInfo } from '../launcher/runfile.js';
 import { statusJson, statusText, type ApiStatus } from '../launcher/status.js';
 import { runMcpStdio } from '../mcp/server.js';
@@ -12,8 +12,11 @@ import { lurkdPaths, VERSION, type LurkdPaths } from '../paths.js';
 const USAGE = `Usage: lurkd <command>
 
 Commands:
-  start [--no-open]   Start the lurkd server if it is not running and print the page address.
-                      The page opens in your browser when this call started the server.
+  start [--no-open]   Start the lurkd server if it is not running and open the lurkd page in
+                      your browser. With --no-open, print a link to the page instead.
+  open [--no-open]    Open the lurkd page in your browser, starting the server if needed.
+                      With --no-open, print the link instead. A link works once, within
+                      60 seconds, and never holds the lurkd token.
   stop                Stop the lurkd server.
   status [--json]     Show whether the server is running, its browser, queue and the sources
                       that need you. Exits 1 when the server is not running.
@@ -22,9 +25,10 @@ Commands:
                       on the first tool call. underscore names the tools sources_search and
                       so on, for clients that refuse dots.
 
-The agent tools as commands. They start the server when it is not running, without opening the
-page. Every one takes --json to print the raw answer. Exit codes: 0 done, 2 usage error, 3 you
-have to act in the lurkd page, 4 a request cap was hit, 1 anything else.
+The agent tools as commands, plus add and import. They start the server when it is not
+running, without opening the page. Every one takes --json to print the raw answer. Exit codes:
+0 done, 2 usage error, 3 you have to act in the lurkd page, 4 a request cap was hit, 1 anything
+else.
 ${MIRROR_HELP}
 
 Options:
@@ -51,12 +55,23 @@ function windowsCheck(): void {
   if (process.platform === 'win32') throw new LurkdError('internal', 'lurkd does not support Windows yet.');
 }
 
-async function start(paths: LurkdPaths, args: string[]): Promise<number> {
+/**
+ * `lurkd start` and `lurkd open` (D52): the server, then a one-time link to the page, opened in
+ * the browser, or printed with --no-open or when this system has no way to open one. The token is
+ * never printed, nor handed to the browser or to `open`.
+ */
+async function start(paths: LurkdPaths, args: string[], command: 'start' | 'open'): Promise<number> {
   const f = flags(args, ['--no-open']);
   windowsCheck();
-  const { info, started } = await ensureServer(paths, { open: !f.has('--no-open') });
-  out(started ? `Started lurkd ${info.version}.` : 'lurkd is already running.');
-  out(serverUrl(info));
+  const { info, started } = await ensureServer(paths);
+  if (started) out(`Started lurkd ${info.version}.`);
+  else if (command === 'start') out('lurkd is already running.');
+  const { link, opened } = await openPage(info, { open: !f.has('--no-open') });
+  if (opened) out('Opened the lurkd page in your browser.');
+  else {
+    out('Open this link in your browser. It works once, within 60 seconds; lurkd open makes another.');
+    out(link);
+  }
   return 0;
 }
 
@@ -126,7 +141,8 @@ async function main(argv: string[]): Promise<number> {
   const paths = lurkdPaths();
   switch (cmd) {
     case 'start':
-      return start(paths, rest);
+    case 'open':
+      return start(paths, rest, cmd);
     case 'stop':
       return stop(paths, rest);
     case 'status':

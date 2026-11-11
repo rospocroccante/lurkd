@@ -1,4 +1,5 @@
 import { LurkdError } from '../errors.js';
+import { quotedName } from '../output/quoted.js';
 import { isAllowedHost } from '../policy/urls.js';
 import { stripMarkers } from '../pseudonym.js';
 import type { JsonResult } from '../browser/reader.js';
@@ -345,7 +346,7 @@ async function readabilityFallback(ctx: ExtractContext, topic: ParsedTopic, firs
     if (!(e instanceof LurkdError) || e.code !== 'extraction_failed') throw e;
     throw new LurkdError(
       'extraction_failed',
-      `${source.name} did not serve the topic JSON for ${topic.canonical} (HTTP ${first.status}, ${mediaType(first.contentType)}), and Readability could not read the topic page either.`,
+      `${quotedName(source.name)} did not serve the topic JSON for ${topic.canonical} (HTTP ${first.status}, ${mediaType(first.contentType)}), and Readability could not read the topic page either.`,
       { url: topic.canonical, sourceId: source.id, status: first.status, contentType: first.contentType, readability: e.message },
     );
   }
@@ -359,7 +360,7 @@ async function fetchThread(ctx: ExtractContext, url: string): Promise<ExtractedT
   await reader.open(topic.canonical);
   const first = await reader.getJson(`${topic.canonical}.json`);
   if (first.status === 404) {
-    throw new LurkdError('not_found', `${source.name} has no topic at ${topic.canonical} (HTTP 404).`, { url: topic.canonical, sourceId: source.id });
+    throw new LurkdError('not_found', `${quotedName(source.name)} has no topic at ${topic.canonical} (HTTP 404).`, { url: topic.canonical, sourceId: source.id });
   }
   if (first.status !== 200 || !isTopic(first.json)) return readabilityFallback(ctx, topic, first);
   const data = first.json;
@@ -383,7 +384,7 @@ async function fetchThread(ctx: ExtractContext, url: string): Promise<ExtractedT
     const r = await reader.getJson(chunkUrl);
     const posts = isObj(r.json) && isObj(r.json.post_stream) ? r.json.post_stream.posts : undefined;
     if (r.status !== 200 || !Array.isArray(posts)) {
-      throw new LurkdError('extraction_failed', `${source.name} did not serve the posts of ${topic.canonical} at ${chunkUrl} (HTTP ${r.status}).`, {
+      throw new LurkdError('extraction_failed', `${quotedName(source.name)} did not serve the posts of ${topic.canonical} at ${chunkUrl} (HTTP ${r.status}).`, {
         url: chunkUrl,
         sourceId: source.id,
         status: r.status,
@@ -403,7 +404,7 @@ async function search(ctx: ExtractContext, query: string, limit: number): Promis
   await reader.open(`${base}/search?q=${q}`);
   const r = await reader.getJson(`${base}/search.json?q=${q}`);
   if (r.status !== 200 || !isObj(r.json)) {
-    throw new LurkdError('extraction_failed', `${source.name} did not serve the search JSON (HTTP ${r.status}).`, { sourceId: source.id, status: r.status });
+    throw new LurkdError('extraction_failed', `${quotedName(source.name)} did not serve the search JSON (HTTP ${r.status}).`, { sourceId: source.id, status: r.status });
   }
   const data = r.json;
   const topics = new Map<number, Obj>();
@@ -459,11 +460,11 @@ async function lookupAuthor(ctx: ExtractContext, username: string): Promise<Auth
   const url = `${baseOf(source)}/u/${encodeURIComponent(username)}.json`;
   const r = await reader.getJson(url);
   if (r.status === 404) {
-    throw new LurkdError('not_found', `${source.name} has no public profile for this author (HTTP 404).`, { sourceId: source.id, status: 404 });
+    throw new LurkdError('not_found', `${quotedName(source.name)} has no public profile for this author (HTTP 404).`, { sourceId: source.id, status: 404 });
   }
   const user = isObj(r.json) ? r.json.user : undefined;
   if (r.status !== 200 || !isObj(user)) {
-    throw new LurkdError('extraction_failed', `${source.name} did not serve the profile JSON of this author (HTTP ${r.status}).`, {
+    throw new LurkdError('extraction_failed', `${quotedName(source.name)} did not serve the profile JSON of this author (HTTP ${r.status}).`, {
       sourceId: source.id,
       status: r.status,
     });

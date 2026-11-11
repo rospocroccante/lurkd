@@ -24,7 +24,7 @@ export interface ApiClient {
 export interface ApiClientOptions {
   /** Start the server through the launcher when it is not running (default false). */
   autoStart?: boolean;
-  /** Starts the server; `ensureServer(paths, { open: false })` unless a test passes its own. */
+  /** Starts the server; `ensureServer(paths)` unless a test passes its own. */
   ensure?: (paths: LurkdPaths) => Promise<unknown>;
   /** How long one call may take (default 30 minutes: a read waits in the queue, then runs up to 10). */
   timeoutMs?: number;
@@ -173,7 +173,7 @@ function send(
 
 export function createApiClient(paths: LurkdPaths, opts: ApiClientOptions = {}): ApiClient {
   const autoStart = opts.autoStart ?? false;
-  const ensure = opts.ensure ?? ((p: LurkdPaths) => ensureServer(p, { open: false }));
+  const ensure = opts.ensure ?? ((p: LurkdPaths) => ensureServer(p));
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const signal = opts.signal;
 

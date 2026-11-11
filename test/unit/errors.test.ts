@@ -11,7 +11,7 @@ describe('error codes', () => {
   it('maps every other code to exit 1', () => {
     const special = new Set(['needs_login', 'challenge', 'needs_acknowledgment', 'disabled', 'handoff_in_progress', 'run_cap', 'daily_cap', 'invalid_request']);
     const rest = Object.entries(EXIT_CODE).filter(([c]) => !special.has(c));
-    expect(rest).toHaveLength(12);
+    expect(rest).toHaveLength(13);
     for (const [, exit] of rest) expect(exit).toBe(1);
   });
 
@@ -29,6 +29,7 @@ describe('error codes', () => {
       needs_login: 409,
       challenge: 409,
       search_unsupported: 422,
+      unsupported: 422,
       handoff_in_progress: 423,
       run_cap: 429,
       daily_cap: 429,

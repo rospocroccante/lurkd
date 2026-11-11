@@ -3,6 +3,7 @@ import path from 'node:path';
 import { chromium, type BrowserContext, type Dialog, type Frame, type Page } from 'playwright';
 import type { FetchLogEntry } from '../archive/state.js';
 import { LurkdError } from '../errors.js';
+import { quotedName } from '../output/quoted.js';
 import { PAGE_TIMEOUT_MS } from '../policy/limiter.js';
 import { redactForumAddress } from '../policy/urls.js';
 import type { SourceConfig } from '../sources/schema.js';
@@ -129,7 +130,7 @@ export type BrowserState = 'down' | 'starting' | 'ready' | 'handoff' | 'error';
 export interface HandoffInfo {
   sourceId: string | null;
   url: string;
-  purpose: 'login' | 'challenge' | 'sample';
+  purpose: 'login' | 'signup' | 'challenge' | 'sample';
   startedAt: string;
 }
 
@@ -174,6 +175,8 @@ export class BrowserManager {
   private handoffLastUrl: string | null = null;
   private handoffTimer: NodeJS.Timeout | null = null;
   private handoffStarting = false;
+  /** The source of the handoff `beginHandoff` is launching; `_handoff` is set only once its window is open. */
+  private handoffStartingSourceId: string | null = null;
   private handoffEnding: Promise<{ finalUrl: string | null }> | null = null;
   private closing = false;
 
@@ -207,6 +210,15 @@ export class BrowserManager {
 
   get handoff(): HandoffInfo | null {
     return this._handoff;
+  }
+
+  /**
+   * The source of a handoff whose window is still launching, null otherwise (also for a sample
+   * window, which has no source). `handoff` stays null until the window is open, so a caller that
+   * must not change a source under its window checks both.
+   */
+  get pendingHandoffSourceId(): string | null {
+    return this.handoffStarting ? this.handoffStartingSourceId : null;
   }
 
   /**
@@ -260,10 +272,12 @@ export class BrowserManager {
       throw new LurkdError('invalid_request', `A handoff needs an absolute http or https URL, not ${info.url}.`, { url: info.url });
     }
     this.handoffStarting = true;
+    this.handoffStartingSourceId = info.sourceId;
     try {
       await this.exclusive(() => this.openHandoff(info));
     } finally {
       this.handoffStarting = false;
+      this.handoffStartingSourceId = null;
     }
   }
 
@@ -388,13 +402,13 @@ export class BrowserManager {
     this.failures.set(
       v.scope,
       offDomain
-        ? new LurkdError('off_domain', `${source.name} redirected to ${shown}, which is not on a domain of ${source.id}. ${sent}`, {
+        ? new LurkdError('off_domain', `${quotedName(source.name)} redirected to ${shown}, which is not on a domain of ${source.id}. ${sent}`, {
             url,
             sourceId: source.id,
             domains: source.domains,
             redirect: true,
           })
-        : new LurkdError('denied_path', `${source.name} redirected a ${v.method} request to ${shown} (${v.note}), which lurkd never sends. ${sent}`, {
+        : new LurkdError('denied_path', `${quotedName(source.name)} redirected a ${v.method} request to ${shown} (${v.note}), which lurkd never sends. ${sent}`, {
             url,
             sourceId: source.id,
             rule: v.note.startsWith('deny:') ? v.note.slice('deny:'.length) : null,

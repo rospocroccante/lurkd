@@ -1,5 +1,6 @@
 import { Readability } from '@mozilla/readability';
 import { LurkdError } from '../errors.js';
+import { quotedName } from '../output/quoted.js';
 import { stripMarkers } from '../pseudonym.js';
 import type { ExtractedThread } from '../types.js';
 import type { EngineAdapter, ExtractContext } from './engine.js';
@@ -97,7 +98,7 @@ async function fetchThread(ctx: ExtractContext, url: string): Promise<ExtractedT
   const thread = pageThreadUrl(source, url);
   const nav = await reader.open(thread);
   if (nav.status !== null && GONE.has(nav.status)) {
-    throw new LurkdError('not_found', `${source.name} has no page at ${shownUrl(thread)} (HTTP ${nav.status}).`, { url: shownUrl(thread), sourceId: source.id, status: nav.status });
+    throw new LurkdError('not_found', `${quotedName(source.name)} has no page at ${shownUrl(thread)} (HTTP ${nav.status}).`, { url: shownUrl(thread), sourceId: source.id, status: nav.status });
   }
   const stored = landedUrl(source, thread, nav.finalUrl);
   const t = await readabilityInWorker(await pageHtml(reader), stored);

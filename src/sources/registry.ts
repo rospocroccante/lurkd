@@ -3,7 +3,10 @@ import path from 'node:path';
 import { parseDocument } from 'yaml';
 import type { SourceOverride, StateStore, StoredSessionState } from '../archive/state.js';
 import { LurkdError } from '../errors.js';
+import { redditUnsupported } from '../extract/reddit-import.js';
+import { quotedName, quotedSentence } from '../output/quoted.js';
 import type { Engine } from '../types.js';
+import { BUILTIN_SOURCES, isImportOnly } from './builtin.js';
 import { parseSource, type SourceConfig } from './schema.js';
 
 export type SessionView = StoredSessionState | 'disabled';
@@ -20,6 +23,7 @@ export interface SourceView {
   ruleQuote: string | null;
   domains: string[];
   loginUrl: string | null;
+  signupUrl: string | null;
   enabled: boolean;
   needsAcknowledgment: boolean;
   session: SessionView;
@@ -38,6 +42,7 @@ export interface SourceView {
  * the D14 form (`search_form`, `search_input` and a read endpoint).
  */
 export function canSearch(source: SourceConfig): boolean {
+  if (isImportOnly(source)) return false;
   if (source.engine === 'discourse') return true;
   if (source.engine === 'xenforo') return source.search_url !== null || source.read_endpoints.length > 0;
   const sel = source.selectors;
@@ -45,6 +50,20 @@ export function canSearch(source: SourceConfig): boolean {
   if (source.search_url !== null) return true;
   return sel.search_form !== undefined && sel.search_input !== undefined && source.read_endpoints.length > 0;
 }
+
+export interface RegistryOptions {
+  seedDir: string;
+  userDir: string;
+  state: StateStore;
+  /**
+   * Load the sources built into lurkd (src/sources/builtin.ts: reddit-import, D50) before the
+   * files. The server always does; tests that count sources leave it out.
+   */
+  builtins?: boolean;
+}
+
+/** The `rel` of a built-in source, as errors() prints it. */
+const BUILT_IN = 'built in';
 
 interface Entry {
   // The source as its file declares it, before the user's overrides.
@@ -96,9 +115,9 @@ export class Registry {
   private entries = new Map<string, Entry>();
   private loadErrors: string[] = [];
 
-  private constructor(private readonly opts: { seedDir: string; userDir: string; state: StateStore }) {}
+  private constructor(private readonly opts: RegistryOptions) {}
 
-  static load(opts: { seedDir: string; userDir: string; state: StateStore }): Registry {
+  static load(opts: RegistryOptions): Registry {
     const r = new Registry(opts);
     r.reload();
     return r;
@@ -114,6 +133,13 @@ export class Registry {
     const errors: string[] = [];
     const entries = new Map<string, Entry>();
     const owners = new Map<string, string>();
+    // Built-ins first, as seed sources: no file can take their id or their hosts.
+    if (this.opts.builtins === true) {
+      for (const b of BUILTIN_SOURCES) {
+        entries.set(b.id, { file: structuredClone(b) as SourceConfig, rel: BUILT_IN, seed: true });
+        for (const d of b.domains) owners.set(d, b.id);
+      }
+    }
     const roots = [
       { dir: this.opts.seedDir, seed: true, recursive: true },
       { dir: this.opts.userDir, seed: false, recursive: false },
@@ -180,7 +206,8 @@ export class Registry {
     // A deep copy, so a caller that edits the result cannot change the loaded source.
     return {
       ...structuredClone(file),
-      enabled: ignoreOn ? file.enabled : (o.enabled ?? file.enabled),
+      // An import-only source stays off whatever the state store holds (D50).
+      enabled: isImportOnly(file) ? false : ignoreOn ? file.enabled : (o.enabled ?? file.enabled),
       show_real_names: o.showRealNames ?? file.show_real_names,
       allow_beacons: o.allowBeacons ?? file.allow_beacons,
     };
@@ -201,8 +228,9 @@ export class Registry {
       ruleQuote: s.automation.rule_quote,
       domains: [...s.domains],
       loginUrl: s.login_url,
+      signupUrl: s.signup_url,
       enabled: s.enabled,
-      needsAcknowledgment: this.needsAcknowledgment(s),
+      needsAcknowledgment: !isImportOnly(s) && this.needsAcknowledgment(s),
       session: s.enabled ? this.opts.state.getSession(id).state : 'disabled',
       showRealNames: s.show_real_names,
       allowBeacons: s.allow_beacons,
@@ -248,6 +276,8 @@ export class Registry {
   assertUsable(id: string): SourceConfig {
     const s = this.get(id);
     const details = { sourceId: id };
+    // D50: imported threads only; the archive answers for them, nothing is read.
+    if (isImportOnly(s)) throw redditUnsupported(null, details);
     // A stale acknowledgment comes first: the user has to read the new rules, whatever the switch says.
     if (this.acknowledgmentOf(s) === 'stale')
       throw new LurkdError('needs_acknowledgment', `${staleReason(s)} Open the lurkd page and read the warning for this source.`, details);
@@ -255,15 +285,15 @@ export class Registry {
       if (s.automation.policy === 'forbidden')
         throw new LurkdError(
           'disabled',
-          `${s.name} is switched off because its rules forbid automated access: "${s.automation.rule_quote ?? ''}" (${s.automation.rule_url}). Switch it on from the lurkd page if you accept that.`,
+          `${quotedName(s.name)} is switched off because its rules forbid automated access: ${quotedSentence(s.automation.rule_quote ?? '')} (${s.automation.rule_url}). Switch it on from the lurkd page if you accept that.`,
           details,
         );
-      throw new LurkdError('disabled', `${s.name} is switched off. Switch it on from the lurkd page.`, details);
+      throw new LurkdError('disabled', `${quotedName(s.name)} is switched off. Switch it on from the lurkd page.`, details);
     }
     if (this.needsAcknowledgment(s))
       throw new LurkdError(
         'needs_acknowledgment',
-        `${s.name} has not been acknowledged yet. Open the lurkd page and read the warning for this source.`,
+        `${quotedName(s.name)} has not been acknowledged yet. Open the lurkd page and read the warning for this source.`,
         details,
       );
     return s;
@@ -277,6 +307,12 @@ export class Registry {
    */
   enable(id: string, acknowledge: boolean): void {
     const s = this.get(id);
+    if (isImportOnly(s))
+      throw new LurkdError(
+        'invalid_request',
+        `${quotedName(s.name)} holds threads imported from saved files. lurkd does not read Reddit live, so it cannot be switched on.`,
+        { sourceId: id },
+      );
     if (acknowledge) {
       this.opts.state.setOverride(id, { enabled: true, acknowledgedAt: new Date().toISOString(), acknowledgedPolicy: s.automation.policy });
       return;
@@ -287,8 +323,8 @@ export class Registry {
         ack === 'stale'
           ? staleReason(s)
           : s.automation.policy === 'forbidden'
-            ? `${s.name}'s rules forbid automated access: "${s.automation.rule_quote ?? ''}" (${s.automation.rule_url}).`
-            : `${s.name} has not been acknowledged yet.`;
+            ? `The rules of ${quotedName(s.name)} forbid automated access: ${quotedSentence(s.automation.rule_quote ?? '')} (${s.automation.rule_url}).`
+            : `${quotedName(s.name)} has not been acknowledged yet.`;
       throw new LurkdError('needs_acknowledgment', `${why} Read the warning for this source and acknowledge it to switch it on.`, {
         sourceId: id,
       });
@@ -359,6 +395,31 @@ export class Registry {
     return this.get(source.id);
   }
 
+  /**
+   * Removes a user source (D46): deletes `<userDir>/<id>.yaml`, reloads, then clears what the
+   * state store holds for the id, as `DraftStore.approve` does (on/off switch, acknowledgment,
+   * real names, beacons) and the stored session too, so a source added later under the same id
+   * starts from its file. Archived threads stay until the user deletes them. `unknown_source`
+   * for an id that is not loaded; `invalid_request` for a seed source, which is switched off
+   * instead, and then nothing is deleted.
+   */
+  removeUserSource(id: string): void {
+    const entry = this.entry(id);
+    if (entry.rel === BUILT_IN)
+      throw new LurkdError('invalid_request', `${quotedName(entry.file.name)} is built into lurkd, so it cannot be removed; "Delete archive" removes its threads.`, {
+        sourceId: id,
+      });
+    if (entry.seed)
+      throw new LurkdError('invalid_request', `${quotedName(entry.file.name)} is a seed source (${entry.rel}), so it cannot be removed; switch it off instead.`, {
+        sourceId: id,
+      });
+    // The loaded id passed the schema's id rule, so the name stays inside userDir.
+    fs.rmSync(path.join(this.opts.userDir, `${entry.file.id}.yaml`), { force: true });
+    this.reload();
+    this.opts.state.setOverride(id, { enabled: null, acknowledgedAt: null, acknowledgedPolicy: null, showRealNames: null, allowBeacons: null });
+    this.opts.state.setSession(id, { state: 'never', lastLoginAt: null, lastCheckAt: null, lastBlockUrl: null, lastBlockKind: null });
+  }
+
   private entry(id: string): Entry {
     const e = this.entries.get(id);
     if (!e) throw new LurkdError('unknown_source', `No source has the id "${id}".`, { sourceId: id });
@@ -387,8 +448,8 @@ function acknowledgment(policy: SourceConfig['automation']['policy'], o: SourceO
 function staleReason(s: SourceConfig): string {
   const { policy, rule_quote, rule_url } = s.automation;
   return policy === 'forbidden'
-    ? `${s.name} changed its rules after you acknowledged them, and they now forbid automated access: "${rule_quote ?? ''}" (${rule_url}).`
-    : `${s.name} changed its rules after you acknowledged them, and lurkd no longer knows whether they allow automated access (${rule_url}).`;
+    ? `${quotedName(s.name)} changed its rules after you acknowledged them, and they now forbid automated access: ${quotedSentence(rule_quote ?? '')} (${rule_url}).`
+    : `${quotedName(s.name)} changed its rules after you acknowledged them, and lurkd no longer knows whether they allow automated access (${rule_url}).`;
 }
 
 /** The `id` the YAML declares, or null when the text does not parse or has no string id. */

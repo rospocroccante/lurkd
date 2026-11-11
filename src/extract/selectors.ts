@@ -3,6 +3,7 @@ import { parseHTML } from 'linkedom';
 import { errors } from 'playwright';
 import type { PageReader } from '../browser/reader.js';
 import { LurkdError } from '../errors.js';
+import { quotedName } from '../output/quoted.js';
 import { deniedBy, hasThreadPattern, isAllowedHost, isThreadPath } from '../policy/urls.js';
 import { NAME_CLOSE, NAME_OPEN, stripMarkers } from '../pseudonym.js';
 import type { Selectors, SourceConfig } from '../sources/schema.js';
@@ -376,7 +377,7 @@ function topLevel(matches: readonly Element[], cap: number): Element[] {
  */
 export function parseSelectorPage(html: string, pageUrl: string, sel: Selectors, source: SourceConfig): SelectorPage {
   if (sel.post === undefined) {
-    throw new LurkdError('extraction_failed', `${source.name} has no selectors.post, so lurkd cannot tell the posts on its pages.`, { sourceId: source.id });
+    throw new LurkdError('extraction_failed', `${quotedName(source.name)} has no selectors.post, so lurkd cannot tell the posts on its pages.`, { sourceId: source.id });
   }
   for (const key of THREAD_KEYS) {
     const s = sel[key];
@@ -477,7 +478,7 @@ export function nextSelectorPage(
 /** Thread links of a search results page from `thread_list`: on the source's hosts, without fragment, each once, in page order. */
 export function parseThreadList(html: string, pageUrl: string, sel: Selectors, source: SourceConfig): SearchHit[] {
   if (sel.thread_list === undefined) {
-    throw new LurkdError('extraction_failed', `${source.name} has no selectors.thread_list, so lurkd cannot tell the thread links on its search results.`, {
+    throw new LurkdError('extraction_failed', `${quotedName(source.name)} has no selectors.thread_list, so lurkd cannot tell the thread links on its search results.`, {
       sourceId: source.id,
     });
   }
@@ -579,7 +580,7 @@ export async function extractWithSelectors(ctx: ExtractContext, url: string, sel
   const { reader, source } = ctx;
   let thread = pageThreadUrl(source, url);
   if (sel.post === undefined) {
-    throw new LurkdError('extraction_failed', `${source.name} has no selectors.post, so lurkd cannot tell the posts on its pages.`, { sourceId: source.id });
+    throw new LurkdError('extraction_failed', `${quotedName(source.name)} has no selectors.post, so lurkd cannot tell the posts on its pages.`, { sourceId: source.id });
   }
   // A selector that cannot run fails before the first request.
   for (const key of THREAD_KEYS) {
@@ -599,7 +600,7 @@ export async function extractWithSelectors(ctx: ExtractContext, url: string, sel
     const nav = await reader.open(target);
     if (nav.status !== null && GONE.has(nav.status)) {
       if (read === 0) {
-        throw new LurkdError('not_found', `${source.name} has no thread at ${shownUrl(thread)} (HTTP ${nav.status}).`, { url: shownUrl(thread), sourceId: source.id, status: nav.status });
+        throw new LurkdError('not_found', `${quotedName(source.name)} has no thread at ${shownUrl(thread)} (HTTP ${nav.status}).`, { url: shownUrl(thread), sourceId: source.id, status: nav.status });
       }
       break;
     }
@@ -614,7 +615,7 @@ export async function extractWithSelectors(ctx: ExtractContext, url: string, sel
       if (read === 0) {
         throw new LurkdError(
           'extraction_failed',
-          `${source.name} shows no posts matching selectors.post (${JSON.stringify(sel.post.slice(0, 80))}) at ${shownUrl(thread)}; the selectors may not fit this page.`,
+          `${quotedName(source.name)} shows no posts matching selectors.post (${JSON.stringify(sel.post.slice(0, 80))}) at ${shownUrl(thread)}; the selectors may not fit this page.`,
           { url: shownUrl(thread), sourceId: source.id, selector: 'selectors.post' },
         );
       }
@@ -664,7 +665,7 @@ export async function selectorSearch(ctx: ExtractContext, query: string, limit: 
       source.selectors?.thread_list === undefined
         ? 'has no selectors.thread_list to read the result links with'
         : 'has no search_url and no search form with a read endpoint (selectors.search_form, selectors.search_input and read_endpoints)';
-    throw new LurkdError('search_unsupported', `${source.name} ${why}, so lurkd cannot search it.`, { sourceId: source.id });
+    throw new LurkdError('search_unsupported', `${quotedName(source.name)} ${why}, so lurkd cannot search it.`, { sourceId: source.id });
   }
   const sel = source.selectors!;
   const list = sel.thread_list!;
@@ -708,7 +709,7 @@ export async function selectorSession(ctx: ExtractContext): Promise<boolean> {
   } catch (e) {
     if (e instanceof errors.TimeoutError) return false;
     const message = (e instanceof Error ? e.message : String(e)).split('\n')[0]!.trim();
-    throw new LurkdError('extraction_failed', `The session check on ${source.name} (session_check.logged_in_selector) failed in the browser.`, {
+    throw new LurkdError('extraction_failed', `The session check on ${quotedName(source.name)} (session_check.logged_in_selector) failed in the browser.`, {
       sourceId: source.id,
       selector: 'session_check.logged_in_selector',
       error: message,

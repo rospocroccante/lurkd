@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openArchive } from '../../src/archive/db.js';
 import { StateStore } from '../../src/archive/state.js';
 import { Registry } from '../../src/sources/registry.js';
-import { DraftStore, draftRefused, MAX_DRAFT_BYTES, SampleStore } from '../../src/sources/drafts.js';
+import { AddRequestStore, DraftStore, draftRefused, ForbiddenLog, MAX_ADD_REQUESTS, MAX_DRAFT_BYTES, SampleStore } from '../../src/sources/drafts.js';
 
 const SEED = fileURLToPath(new URL('../fixtures/sources/seed/', import.meta.url));
 const HOST = 'kappa.example.org';
@@ -83,6 +83,7 @@ describe('DraftStore', () => {
     const r = drafts.submit(
       draft({
         login_url: `https://${HOST}/login`,
+        signup_url: `https://${HOST}/register`,
         search_url: `https://${HOST}/find?q={query}`,
         allow_beacons: true,
         read_endpoints: [
@@ -100,6 +101,7 @@ describe('DraftStore', () => {
       'POST /find/more: next page of hits',
       `domains: ${HOST}`,
       `login_url: https://${HOST}/login`,
+      `signup_url: https://${HOST}/register`,
       `search_url: https://${HOST}/find?q={query}`,
       `policy unknown (https://${HOST}/help/terms)`,
       'allow_beacons set to false: beacons are allowed from the lurkd page',
@@ -348,5 +350,101 @@ describe('SampleStore', () => {
     samples.request(HOST, `https://${HOST}/threads/2`);
     expect(samples.get(HOST)).toMatchObject({ url: `https://${HOST}/threads/2`, structure: null, sampledAt: null });
     expect(samples.pending().map((p) => p.host)).toEqual([HOST]);
+  });
+});
+
+describe('AddRequestStore', () => {
+  let db: Database.Database;
+  let now: Date;
+  let adds: AddRequestStore;
+
+  beforeEach(() => {
+    db = openArchive(':memory:');
+    now = new Date('2026-11-10T10:00:00.000Z');
+    adds = new AddRequestStore(db, () => now);
+  });
+  afterEach(() => db.close());
+
+  it('records one request per host, oldest first, and keeps the first address of a host asked again', () => {
+    expect(adds.request('Kappa.Example.org', `https://${HOST}/t/1`)).toEqual({ url: `https://${HOST}/t/1`, kept: false });
+    now = new Date('2026-11-10T10:01:00.000Z');
+    adds.request('bench.example', 'https://bench.example/');
+    now = new Date('2026-11-10T10:02:00.000Z');
+    // The address the page shows cannot change under the user: the agent cannot rewrite it.
+    expect(adds.request(HOST, `https://${HOST}/community`)).toEqual({ url: `https://${HOST}/t/1`, kept: true });
+    expect(adds.request(HOST, `https://${HOST}/t/1`)).toEqual({ url: `https://${HOST}/t/1`, kept: false });
+    expect(adds.pending()).toEqual([
+      { host: HOST, url: `https://${HOST}/t/1`, requestedAt: '2026-11-10T10:00:00.000Z' },
+      { host: 'bench.example', url: 'https://bench.example/', requestedAt: '2026-11-10T10:01:00.000Z' },
+    ]);
+    expect(adds.remove('BENCH.example')).toBe(true);
+    expect(adds.pending().map((r) => r.host)).toEqual([HOST]);
+    expect(adds.remove('nobody.example')).toBe(false);
+    expect(adds.pending()).toHaveLength(1);
+    // Once removed, the host may be queued again with another address.
+    adds.remove(HOST);
+    expect(adds.request(HOST, `https://${HOST}/community`)).toEqual({ url: `https://${HOST}/community`, kept: false });
+  });
+
+  it(`keeps at most ${MAX_ADD_REQUESTS} hosts waiting`, () => {
+    for (let i = 0; i < MAX_ADD_REQUESTS; i++) adds.request(`f${i}.example`, `https://f${i}.example/`);
+    expect(() => adds.request('one-more.example', 'https://one-more.example/')).toThrow(
+      expect.objectContaining({
+        code: 'invalid_request',
+        message: `${MAX_ADD_REQUESTS} forums are already waiting on the lurkd page. Ask the user to analyse or dismiss some of them under "Add a forum" first.`,
+      }),
+    );
+    // A host already waiting is not refused: it keeps its first address.
+    expect(adds.request('f0.example', 'https://f0.example/community')).toEqual({ url: 'https://f0.example/', kept: true });
+    expect(adds.pending()).toHaveLength(MAX_ADD_REQUESTS);
+  });
+});
+
+describe('ForbiddenLog (D49)', () => {
+  let db: Database.Database;
+  let now: Date;
+  let log: ForbiddenLog;
+  const entry = (host: string, sentence: string) => {
+    const h = host.toLowerCase();
+    return {
+      host,
+      name: `Forum ${h}`,
+      engine: 'discourse' as const,
+      baseUrl: `https://${h}`,
+      loginUrl: `https://${h}/login`,
+      signupUrl: `https://${h}/signup`,
+      searchUrl: null,
+      ruleUrl: `https://${h}/tos`,
+      sentence,
+    };
+  };
+
+  beforeEach(() => {
+    db = openArchive(':memory:');
+    now = new Date('2026-11-10T10:00:00.000Z');
+    log = new ForbiddenLog(db, () => now);
+  });
+  afterEach(() => db.close());
+
+  it('keeps one entry per host, newest first, and the latest clause wins', () => {
+    expect(log.record(entry('Kappa.Example.org', 'You may not use bots.'))).toEqual({ ...entry(HOST, 'You may not use bots.'), host: HOST, foundAt: '2026-11-10T10:00:00.000Z' });
+    now = new Date('2026-11-10T10:01:00.000Z');
+    log.record(entry('bench.example', 'Scraping is prohibited.'));
+    expect(log.list().map((e) => e.host)).toEqual(['bench.example', HOST]);
+    now = new Date('2026-11-10T10:02:00.000Z');
+    log.record({ ...entry(HOST, 'You may not automate access to the forum.'), engine: null, loginUrl: null, signupUrl: null });
+    expect(log.list()).toEqual([
+      { ...entry(HOST, 'You may not automate access to the forum.'), engine: null, loginUrl: null, signupUrl: null, foundAt: '2026-11-10T10:02:00.000Z' },
+      { ...entry('bench.example', 'Scraping is prohibited.'), foundAt: '2026-11-10T10:01:00.000Z' },
+    ]);
+    expect(log.get('KAPPA.example.org')?.sentence).toBe('You may not automate access to the forum.');
+    expect(log.get('nobody.example')).toBeNull();
+  });
+
+  it('removes an entry by host', () => {
+    log.record(entry(HOST, 'You may not use bots.'));
+    expect(log.remove('nobody.example')).toBe(false);
+    expect(log.remove(HOST.toUpperCase())).toBe(true);
+    expect(log.list()).toEqual([]);
   });
 });

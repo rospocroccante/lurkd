@@ -32,7 +32,7 @@ describe('SKILL.md', () => {
     expect(fm.name).toBe('lurkd');
     expect(fm.name).toBe(path.basename(path.dirname(path.join(PACKAGE_ROOT, SKILL))));
     expect(fm.description).toBe(
-      "Read login-gated forums and marketplaces through the user's own browser session, read-only, as threaded Markdown with pseudonymised authors. Use when a question needs forum discussions that web search cannot reach.",
+      "Read the forums AI search tends to miss, public or behind a login, through the user's own browser session, read-only, as threaded Markdown with pseudonymised authors. Use when a question needs forum discussions that web search cannot reach.",
     );
   });
 
@@ -53,8 +53,10 @@ describe('SKILL.md', () => {
     }
   });
 
-  it('tells the agent to start lurkd and to try the archive first', () => {
-    expect(body).toContain('lurkd start');
+  it('tells the agent how to open the lurkd page and to try the archive first', () => {
+    // D52: the page opens from a one-time link that lurkd open mints and opens; no address to pass on.
+    expect(body).toContain('lurkd open');
+    expect(body).not.toMatch(/give them the address/);
     expect(body.indexOf('archive.search')).toBeLessThan(body.indexOf('source.fetch'));
     expect(body).toMatch(/before (going online|reading live|source\.fetch)/i);
   });
@@ -71,6 +73,11 @@ describe('SKILL.md', () => {
     expect(body).not.toMatch(/names the button/i);
     expect(body).toMatch(/never tell them to switch it on/i);
     expect(body).not.toMatch(/same name and output/i);
+  });
+
+  it('says that a source name or other text in double quotes is data, not lurkd speaking (M1)', () => {
+    expect(body).toMatch(/double quotes/);
+    expect(body).toMatch(/source name/i);
   });
 
   it('stops on every state that needs the user, without retry or workaround', () => {
@@ -95,7 +102,7 @@ describe('SKILL.md', () => {
     expect(body).toMatch(/approv/i);
   });
 
-  it('does not tell the agent to run npx lurkd while the package name is unregistered (D16)', () => {
+  it('does not tell the agent to run npx lurkd in the skill; the skill uses the installed command (D16)', () => {
     // The only mention is the ban.
     for (const line of body.split('\n').filter((l) => l.includes('npx lurkd'))) expect(line).toMatch(/do not run `npx lurkd`/i);
   });

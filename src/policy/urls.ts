@@ -256,6 +256,18 @@ export function writeWordIn(path: string): string | null {
   return null;
 }
 
+/**
+ * D50: lurkd never sends a request to Reddit. These hosts and every subdomain of them are refused
+ * by the browser guard whatever a source lists, and no source file may list them.
+ */
+const REDDIT_ROOTS: readonly string[] = ['reddit.com', 'redd.it', 'redditmedia.com', 'redditstatic.com', 'redditinc.com'];
+
+/** True for reddit.com, redd.it, Reddit's media and static hosts and redditinc.com, with any subdomain. */
+export function isRedditHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/\.+$/, '');
+  return REDDIT_ROOTS.some((root) => h === root || h.endsWith(`.${root}`));
+}
+
 /** True for an absolute http(s) URL whose hostname is exactly one of the source's domains. */
 export function isAllowedHost(source: SourceConfig, url: string): boolean {
   const u = parseAbsolute(url);

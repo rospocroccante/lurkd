@@ -12,20 +12,23 @@
 <header class="top">
   <div class="top-row">
     <h1 class="brand"><svg class="brand-mark" viewBox="0 0 120 120" width="28" height="28" aria-hidden="true"><path class="brand-bubble" d="M32 8H88Q112 8 112 32V72Q112 96 88 96H58L34 116V96H32Q8 96 8 72V32Q8 8 32 8Z"></path><path class="brand-eye" d="M20 52H100Q60 92 20 52Z"></path><path class="brand-bubble" d="M44 52A16 16 0 0 0 76 52Z"></path><circle class="brand-eye" cx="66" cy="57" r="4"></circle></svg>lurkd</h1>
-    <p id="browser-state" class="badge badge-neutral">Browser state unknown</p>
+    <div class="top-actions">
+      <button type="button" id="open-add" aria-expanded="false" aria-controls="add">Add a forum</button>
+      <button type="button" id="queue-state" class="button-quiet chip-button" aria-expanded="false" aria-controls="panel-queue">Queue empty</button>
+      <p id="browser-state" class="badge badge-neutral">Browser state unknown</p>
+    </div>
   </div>
-  <p id="browser-error" class="muted" hidden></p>
-  <div class="searchbar">
-    <label for="search" class="visually-hidden">Search sources and archived threads</label>
-    <input id="search" type="search" placeholder="Search sources and archived threads" autocomplete="off" spellcheck="false">
-  </div>
-  <details class="cookie-notice" open>
-    <summary>Cookies and your browser profile</summary>
-    <p id="cookie-notice"></p>
-  </details>
+  <p id="browser-error" class="muted small" hidden></p>
 </header>
 
 <main>
+  <section id="todo" class="todo" aria-labelledby="h-todo">
+    <h2 id="h-todo" class="todo-title" tabindex="-1">To do</h2>
+    <div id="todo-items" class="todo-items"><span class="muted small">Loading...</span></div>
+  </section>
+
+  <div id="job-strip" class="job-strip" hidden></div>
+
   <p id="unreachable" class="banner banner-error" role="alert" hidden></p>
 
   <div id="notice" class="banner" hidden>
@@ -38,8 +41,148 @@
     <div class="actions" id="handoff-actions"></div>
   </section>
 
-  <section aria-labelledby="h-directory">
-    <h2 id="h-directory">Sources</h2>
+  <div id="panels">
+    <section id="add" class="panel" aria-labelledby="h-add" aria-busy="false" hidden>
+      <div class="panel-head">
+        <h2 id="h-add" tabindex="-1">Add a forum</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="add" aria-label="Close Add a forum">Close</button>
+      </div>
+      <form id="add-form" class="add-address" novalidate>
+        <label for="add-url">Forum address</label>
+        <div class="add-row">
+          <input id="add-url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://forum.example.com/" aria-describedby="add-url-hint">
+          <button type="submit" id="add-analyse">Analyse</button>
+        </div>
+        <p id="add-url-hint" class="muted small">lurkd opens this one page in its own browser, read-only, to find the forum engine and the rules pages. It follows no link.</p>
+      </form>
+      <p id="add-status" class="add-status" role="status"></p>
+      <div id="add-result"></div>
+      <div id="add-requests"></div>
+      <section id="import" class="import-box" aria-labelledby="h-import">
+        <h3 id="h-import">Import a saved Reddit thread</h3>
+        <p id="import-hint" class="muted small">lurkd never contacts Reddit. Open the thread in your own browser, add .json to the end of its address and save the page that opens as a file, then choose that file here. The import is for your own use: one thread at a time, kept on this computer. Reddit's User Agreement forbids collecting its content without permission, so the decision to import a thread, and the responsibility for it, are yours.</p>
+        <form id="import-form" class="add-address" novalidate>
+          <label for="import-file">Saved thread file (.json, at most 20 MB)</label>
+          <div class="add-row">
+            <input id="import-file" type="file" accept=".json,application/json" aria-describedby="import-hint import-error">
+            <button type="submit" id="import-submit">Import</button>
+          </div>
+        </form>
+        <p id="import-error" class="field-error" role="alert" hidden></p>
+        <div id="import-result" role="status"></div>
+      </section>
+    </section>
+
+    <section id="panel-drafts" class="panel" aria-labelledby="h-drafts" hidden>
+      <div class="panel-head">
+        <h2 id="h-drafts" tabindex="-1">Drafts to approve</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="drafts" aria-label="Close Drafts to approve">Close</button>
+      </div>
+      <div id="drafts"></div>
+    </section>
+
+    <section id="panel-samples" class="panel" aria-labelledby="h-samples" hidden>
+      <div class="panel-head">
+        <h2 id="h-samples" tabindex="-1">Sites waiting for a sample</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="samples" aria-label="Close Sites waiting for a sample">Close</button>
+      </div>
+      <div id="samples"></div>
+    </section>
+
+    <section id="panel-forbidden" class="panel" aria-labelledby="h-forbidden" hidden>
+      <div class="panel-head">
+        <h2 id="h-forbidden" tabindex="-1">Forums that forbid automated access</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="forbidden" aria-label="Close Forums that forbid automated access">Close</button>
+      </div>
+      <p class="muted small">Analyse found these sentences in the rules of forums you typed in. Add anyway saves a draft that stays switched off: lurkd reads the forum only after you approve the draft, switch it on and press I accept.</p>
+      <div id="forbidden"></div>
+    </section>
+
+    <section id="panel-errors" class="panel" aria-labelledby="h-errors" hidden>
+      <div class="panel-head">
+        <h2 id="h-errors" tabindex="-1">Source files with problems</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="errors" aria-label="Close Source files with problems">Close</button>
+      </div>
+      <ul id="registry-errors" class="plain-list"></ul>
+    </section>
+
+    <section id="panel-groups" class="panel" aria-labelledby="h-groups" hidden>
+      <div class="panel-head">
+        <h2 id="h-groups" tabindex="-1">Your groups</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="groups" aria-label="Close Your groups">Close</button>
+      </div>
+      <p class="muted small">Groups are yours: lurkd keeps them in its archive, not in the source files, and a source can be in several. Your agent can ask for the sources of a group by its name, but cannot make or change one.</p>
+      <form id="group-new" class="add-address" novalidate>
+        <label for="group-new-name">New group</label>
+        <div class="add-row">
+          <input id="group-new-name" type="text" autocomplete="off" spellcheck="false" maxlength="60" placeholder="For example: Smart home" aria-describedby="group-new-error">
+          <button type="submit">Create</button>
+        </div>
+        <p id="group-new-error" class="field-error" role="alert" hidden></p>
+      </form>
+      <div id="groups-list"></div>
+    </section>
+
+    <section id="panel-queue" class="panel" aria-labelledby="h-queue" hidden>
+      <div class="panel-head">
+        <h2 id="h-queue" tabindex="-1">Queue</h2>
+        <button type="button" class="button-quiet panel-close" data-panel="queue" aria-label="Close Queue">Close</button>
+      </div>
+      <div id="queue"></div>
+    </section>
+  </div>
+
+  <section id="sources" aria-labelledby="h-directory">
+    <div class="toolbar">
+      <h2 id="h-directory">Sources <span id="source-count" class="muted count"></span></h2>
+      <div class="tool tool-search">
+        <label for="search" class="visually-hidden">Search sources and archived threads</label>
+        <input id="search" type="search" placeholder="Search sources and archived threads" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="tool">
+        <label for="filter-topic" class="visually-hidden">Topic</label>
+        <select id="filter-topic"><option value="">All topics</option></select>
+      </div>
+      <div class="tool chips" id="filter-state" role="group" aria-label="State"></div>
+      <div class="tool">
+        <label for="filter-policy" class="visually-hidden">Rules on automation</label>
+        <select id="filter-policy">
+          <option value="">Any rules</option>
+          <option value="allowed">Automation allowed</option>
+          <option value="unknown">Rules silent</option>
+          <option value="forbidden">Automation forbidden</option>
+        </select>
+      </div>
+      <div class="tool">
+        <label for="filter-engine" class="visually-hidden">Engine</label>
+        <select id="filter-engine"><option value="">All engines</option></select>
+      </div>
+      <div class="tool">
+        <label for="sort" class="visually-hidden">Sort</label>
+        <select id="sort">
+          <option value="name">Sort by name</option>
+          <option value="topic">Sort by topic</option>
+          <option value="last_read">Sort by last read</option>
+        </select>
+      </div>
+      <div class="tool tool-group">
+        <label for="group-by" class="visually-hidden">Group the rows</label>
+        <select id="group-by">
+          <option value="none">No groups</option>
+          <option value="topic">Group by topic</option>
+          <option value="custom">Group by your groups</option>
+        </select>
+        <button type="button" id="open-groups" class="button-quiet" aria-expanded="false" aria-controls="panel-groups">Edit groups</button>
+      </div>
+    </div>
+    <div id="bulk-bar" class="bulk-bar" role="region" aria-label="Selected sources" hidden>
+      <span id="bulk-count" class="bulk-count" aria-live="polite">0 selected</span>
+      <button type="button" id="bulk-on" class="button-small">Switch on</button>
+      <button type="button" id="bulk-off" class="button-quiet button-small">Switch off</button>
+      <button type="button" id="bulk-add" class="button-quiet button-small">Add to group</button>
+      <button type="button" id="bulk-remove" class="button-quiet button-small">Remove from group</button>
+      <button type="button" id="bulk-clear" class="button-quiet button-small">Clear selection</button>
+    </div>
     <div id="directory" aria-busy="true"><p class="muted">Loading...</p></div>
   </section>
 
@@ -56,42 +199,28 @@
     </div>
   </section>
 
-  <section aria-labelledby="h-queue">
-    <h2 id="h-queue">Queue</h2>
-    <div id="queue"></div>
-  </section>
-
-  <section aria-labelledby="h-samples">
-    <h2 id="h-samples">Sites waiting for a sample</h2>
-    <div id="samples"></div>
-  </section>
-
-  <section aria-labelledby="h-drafts">
-    <h2 id="h-drafts">Drafts to approve</h2>
-    <div id="drafts"></div>
-  </section>
-
-  <section aria-labelledby="h-settings">
-    <h2 id="h-settings">Archive settings</h2>
-    <div class="field">
-      <label for="retention">Keep archived threads</label>
-      <select id="retention">
-        <option value="">Keep everything</option>
-        <option value="30">30 days</option>
-        <option value="90">90 days</option>
-        <option value="365">365 days</option>
-      </select>
+  <details id="settings" class="settings">
+    <summary>Settings</summary>
+    <div class="settings-body">
+      <div class="field">
+        <label for="retention">Keep archived threads</label>
+        <select id="retention">
+          <option value="">Keep everything</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">365 days</option>
+        </select>
+      </div>
+      <details class="cookie-notice">
+        <summary>Cookies and your browser profile</summary>
+        <p id="cookie-notice"></p>
+      </details>
     </div>
-  </section>
-
-  <section id="errors-section" aria-labelledby="h-errors" hidden>
-    <h2 id="h-errors">Source files with problems</h2>
-    <ul id="registry-errors" class="plain-list"></ul>
-  </section>
+  </details>
 </main>
 
 <footer class="foot">
-  <p id="version" class="muted"></p>
+  <p id="version" class="muted small"></p>
 </footer>
 
 <dialog id="dialog" aria-labelledby="dialog-title">

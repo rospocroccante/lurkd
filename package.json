@@ -1,7 +1,27 @@
 {
   "name": "lurkd",
-  "version": "0.1.0",
-  "description": "Read login-gated forums through your own browser profile, read-only, into a local archive of threaded Markdown.",
+  "version": "0.2.0",
+  "description": "Let your coding agent read the forums AI search tends to miss, public or behind a login, read-only, into a local archive of threaded Markdown.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "ai-agents",
+    "claude-code",
+    "forum",
+    "discourse",
+    "xenforo",
+    "read-only",
+    "archive",
+    "cli"
+  ],
+  "homepage": "https://dev-136.gitbook.io/lurkd/",
+  "bugs": {
+    "url": "https://github.com/rospocroccante/lurkd/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rospocroccante/lurkd.git"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -20,7 +40,8 @@
     ".cursor-plugin",
     "gemini-extension.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

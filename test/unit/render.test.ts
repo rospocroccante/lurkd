@@ -41,6 +41,36 @@ const input = (over: Partial<RenderInput> = {}): RenderInput => ({
 const thread = (n: number, size: number): RenderInput =>
   input({ postsExpected: n, posts: Array.from({ length: n }, (_, i) => post(i + 1, { bodyMd: 'x'.repeat(size) })) });
 
+describe('renderThread, provenance of an imported thread (D50)', () => {
+  const front = (r: { markdown: string }) => r.markdown.split('\n---\n')[0]!.split('\n');
+  const imported = (over: Partial<RenderInput> = {}) => input({ engine: 'import', ...over });
+
+  it('says the thread came from a saved file, and nothing about who saved it', () => {
+    const lines = front(renderThread(imported(), mode));
+    expect(lines).toContain('imported: "from a saved file; lurkd did not contact the site"');
+    expect(lines.filter((l) => l.startsWith('imported_by:') || l.startsWith('replaced:'))).toEqual([]);
+  });
+
+  it('names the route the file came through, as far as lurkd can tell them apart', () => {
+    expect(front(renderThread(imported({ imported: { via: 'page', replacedImportAt: null } }), mode))).toContain('imported_by: "page upload"');
+    expect(front(renderThread(imported({ imported: { via: 'api', replacedImportAt: null } }), mode))).toContain('imported_by: "lurkd import / API"');
+  });
+
+  it('keeps the date of the earlier import it replaced, after the imported lines', () => {
+    const lines = front(renderThread(imported({ imported: { via: 'api', replacedImportAt: '2026-11-07T10:00:00.000Z' } }), mode));
+    expect(lines.slice(-3)).toEqual([
+      'imported: "from a saved file; lurkd did not contact the site"',
+      'imported_by: "lurkd import / API"',
+      'replaced: "2026-11-07T10:00:00.000Z"',
+    ]);
+  });
+
+  it('writes no import lines for a thread read live', () => {
+    const lines = front(renderThread(input({ imported: { via: 'page', replacedImportAt: '2026-11-07T10:00:00.000Z' } }), mode));
+    expect(lines.filter((l) => /^(imported|imported_by|replaced):/.test(l))).toEqual([]);
+  });
+});
+
 describe('renderThread', () => {
   it('writes the exact front matter, headings, notes and empty post', () => {
     const r = renderThread(
@@ -83,6 +113,18 @@ describe('renderThread', () => {
         '',
       ].join('\n'),
     });
+  });
+
+  it('writes a read note as the last front matter line, and none without one (D48)', () => {
+    const lines = renderThread(input({ note: 'read without login: the session expired' }), mode).markdown.split('\n');
+    const end = lines.indexOf('---', 1);
+    expect(lines.slice(end - 2, end + 1)).toEqual(['authors: pseudonyms', 'note: "read without login: the session expired"', '---']);
+    expect(lines.filter((l) => l.startsWith('note:'))).toHaveLength(1);
+    // A note stays one line and quoted, whatever it holds.
+    const odd = renderThread(input({ note: 'a\n---\nengine: x' }), mode).markdown.split('\n');
+    expect(odd).toContain('note: "a --- engine: x"');
+    expect(renderThread(input(), mode).markdown).not.toMatch(/^note:/m);
+    expect(renderThread(input({ note: null }), mode).markdown).not.toMatch(/^note:/m);
   });
 
   it('renders a Discourse thread without page notes', () => {

@@ -35,8 +35,9 @@ export const SERVER_ENTRIES: readonly string[] = Object.freeze([
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** The page's address, with no credential in it: opening it needs a one-time link (`openPage`). */
 export function serverUrl(info: RunInfo): string {
-  return `http://127.0.0.1:${info.port}/?t=${info.token}`;
+  return `http://127.0.0.1:${info.port}/`;
 }
 
 /**
@@ -196,22 +197,19 @@ function startFailed(paths: LurkdPaths, why: string): LurkdError {
 }
 
 export interface EnsureServerOptions {
-  open: boolean;
   spawn?: () => void;
   waitMs?: number;
   installBrowser?: () => Promise<void>;
-  /** Opens the page; `openInBrowser` unless a test passes its own. */
-  openUrl?: (url: string) => void;
   /** How long a live lurkd server that does not answer gets before the start fails (default 5 s). */
   stalledMs?: number;
 }
 
 /**
- * Returns the running server, or starts one and waits for it. With `open: true` the page opens in
- * the system browser only when this call started the server. Throws `server_unavailable` when no
- * server answers within `waitMs` (default 20 s); the browser download is not counted.
+ * Returns the running server, or starts one and waits for it. Opening the page is `openPage`'s
+ * job. Throws `server_unavailable` when no server answers within `waitMs` (default 20 s); the
+ * browser download is not counted.
  */
-export async function ensureServer(paths: LurkdPaths, opts: EnsureServerOptions): Promise<{ info: RunInfo; started: boolean }> {
+export async function ensureServer(paths: LurkdPaths, opts: EnsureServerOptions = {}): Promise<{ info: RunInfo; started: boolean }> {
   const waitMs = opts.waitMs ?? DEFAULT_WAIT_MS;
   const running = await healthyServer(paths);
   if (running) return { info: running, started: false };
@@ -253,10 +251,7 @@ export async function ensureServer(paths: LurkdPaths, opts: EnsureServerOptions)
         for (;;) {
           await sleep(POLL_MS);
           const info = await healthyServer(paths);
-          if (info) {
-            if (opts.open) (opts.openUrl ?? openInBrowser)(serverUrl(info));
-            return { info, started: true };
-          }
+          if (info) return { info, started: true };
           const code = exited();
           if (code !== undefined) throw startFailed(paths, `the server process exited${code === null ? '' : ` with code ${code}`}`);
           if (Date.now() > end) throw startFailed(paths, `no answer within ${Math.round(waitMs / 1000)} s`);
@@ -432,15 +427,76 @@ export async function ensureBrowserInstalled(log: (line: string) => void, deps: 
 
 // ---- the page ----
 
-/** Opens the URL in the system browser, detached. Errors are ignored: the URL is printed anyway. */
-export function openInBrowser(url: string): void {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'linux' ? 'xdg-open' : null;
-  if (cmd === null) return;
+/** The shape of a one-time page link of the server on `port` (D52): `/?n=` and 32 bytes in base64url. */
+const pageLinkRe = (port: number): RegExp => new RegExp(`^http://127\\.0\\.0\\.1:${port}/\\?n=[A-Za-z0-9_-]{43}$`);
+
+/**
+ * D52: asks the server for a one-time link to the page, with the token as a Bearer header. The
+ * link works once, within 60 seconds; the token is never part of it. Throws `server_unavailable`
+ * when the server does not answer with such a link.
+ */
+export async function mintPageLink(info: RunInfo): Promise<string> {
+  const refused = (why: string) => new LurkdError('server_unavailable', `The lurkd server gave no page link (${why}). Run lurkd stop, then lurkd start.`);
+  let res: Response;
   try {
-    const child = spawn(cmd, [url], { detached: true, stdio: 'ignore' });
+    res = await fetch(`http://127.0.0.1:${info.port}/api/page-link`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${info.token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new LurkdError('server_unavailable', 'The lurkd server stopped answering. Run lurkd start again.');
+  }
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw refused(`HTTP ${res.status}`);
+  }
+  let url: unknown;
+  try {
+    url = ((await res.json()) as { url?: unknown } | null)?.url;
+  } catch {
+    throw refused('not JSON');
+  }
+  if (typeof url !== 'string' || !pageLinkRe(info.port).test(url)) throw refused('not a page link');
+  return url;
+}
+
+export interface OpenPageOptions {
+  /** False for --no-open: the link is only handed back, for the caller to print. */
+  open: boolean;
+  /** Opens a URL in the system browser and says whether it could; `openInBrowser` unless a test passes its own. */
+  openUrl?: (url: string) => boolean;
+}
+
+/**
+ * `lurkd start` and `lurkd open` (D52): mints a one-time link and, with `open`, opens the browser
+ * with it. `opened` is false when the link was not handed to a browser, so the caller prints it.
+ */
+export async function openPage(info: RunInfo, opts: OpenPageOptions): Promise<{ link: string; opened: boolean }> {
+  const link = await mintPageLink(info);
+  const opened = opts.open && (opts.openUrl ?? openInBrowser)(link);
+  return { link, opened };
+}
+
+/** The system opener for a URL: the URL is its only argument. Null on a platform lurkd has none for. */
+export function openerCommand(url: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } | null {
+  const cmd = platform === 'darwin' ? 'open' : platform === 'linux' ? 'xdg-open' : null;
+  return cmd === null ? null : { cmd, args: [url] };
+}
+
+/**
+ * Opens the URL in the system browser, detached. False when this platform has no opener or the
+ * spawn throws at once; an opener that fails later is not seen.
+ */
+export function openInBrowser(url: string): boolean {
+  const opener = openerCommand(url);
+  if (opener === null) return false;
+  try {
+    const child = spawn(opener.cmd, opener.args, { detached: true, stdio: 'ignore' });
     child.once('error', () => {});
     child.unref();
+    return true;
   } catch {
-    // printed anyway
+    return false;
   }
 }

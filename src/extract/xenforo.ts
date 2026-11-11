@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import { errors } from 'playwright';
 import type { PageReader } from '../browser/reader.js';
 import { LurkdError } from '../errors.js';
+import { quotedName } from '../output/quoted.js';
 import { isAllowedHost, isThreadPath } from '../policy/urls.js';
 import { stripMarkers } from '../pseudonym.js';
 import type { SourceConfig } from '../sources/schema.js';
@@ -403,7 +404,7 @@ async function fetchThread(ctx: ExtractContext, url: string): Promise<ExtractedT
     const nav = await reader.open(target.url);
     if (nav.status !== null && GONE.has(nav.status)) {
       if (read === 0) {
-        throw new LurkdError('not_found', `${source.name} has no thread at ${thread} (HTTP ${nav.status}).`, { url: thread, sourceId: source.id, status: nav.status });
+        throw new LurkdError('not_found', `${quotedName(source.name)} has no thread at ${thread} (HTTP ${nav.status}).`, { url: thread, sourceId: source.id, status: nav.status });
       }
       // A later page that is gone ends the read; the pages before it stay.
       break;
@@ -419,11 +420,11 @@ async function fetchThread(ctx: ExtractContext, url: string): Promise<ExtractedT
     const page = parseThreadPage(await pageHtml(reader), finalUrl);
     if (read === 0 && page.posts.length === 0) {
       if (page.isError) {
-        throw new LurkdError('not_found', `${source.name} shows an error page instead of the thread at ${thread}.`, { url: thread, sourceId: source.id });
+        throw new LurkdError('not_found', `${quotedName(source.name)} shows an error page instead of the thread at ${thread}.`, { url: thread, sourceId: source.id });
       }
       throw new LurkdError(
         'extraction_failed',
-        `${source.name} shows no posts (article.message--post) at ${thread}; the forum may use a style this version cannot read.`,
+        `${quotedName(source.name)} shows no posts (article.message--post) at ${thread}; the forum may use a style this version cannot read.`,
         { url: thread, sourceId: source.id },
       );
     }
@@ -503,7 +504,7 @@ async function checkSession(ctx: ExtractContext): Promise<boolean> {
   } catch (e) {
     if (e instanceof errors.TimeoutError) return false;
     const message = (e instanceof Error ? e.message : String(e)).split('\n')[0]!.trim();
-    throw new LurkdError('extraction_failed', `The session check on ${source.name} failed in the browser.`, { sourceId: source.id, error: message });
+    throw new LurkdError('extraction_failed', `The session check on ${quotedName(source.name)} failed in the browser.`, { sourceId: source.id, error: message });
   }
 }
 
@@ -563,14 +564,14 @@ async function lookupAuthor(ctx: ExtractContext, url: string): Promise<AuthorSig
   }
   const nav = await reader.open(url);
   if (nav.status !== null && GONE.has(nav.status)) {
-    throw new LurkdError('not_found', `${source.name} has no public profile for this author (HTTP ${nav.status}).`, { sourceId: source.id, status: nav.status });
+    throw new LurkdError('not_found', `${quotedName(source.name)} has no public profile for this author (HTTP ${nav.status}).`, { sourceId: source.id, status: nav.status });
   }
   const member = parseMemberPage(await pageHtml(reader));
   if (member.header) return member.signals;
   if (member.isError) {
-    throw new LurkdError('not_found', `${source.name} has no public profile for this author.`, { sourceId: source.id });
+    throw new LurkdError('not_found', `${quotedName(source.name)} has no public profile for this author.`, { sourceId: source.id });
   }
-  throw new LurkdError('extraction_failed', `${source.name} did not show a member header (.memberHeader) for this author.`, { sourceId: source.id });
+  throw new LurkdError('extraction_failed', `${quotedName(source.name)} did not show a member header (.memberHeader) for this author.`, { sourceId: source.id });
 }
 
 export const xenforoAdapter: EngineAdapter = {

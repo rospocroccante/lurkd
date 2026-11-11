@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import type { StateStore } from '../archive/state.js';
 import type { StoredThread, ThreadStore } from '../archive/threads.js';
 import type { BrowserManager } from '../browser/manager.js';
@@ -5,16 +6,35 @@ import { PageReader } from '../browser/reader.js';
 import { formatError } from '../client/format.js';
 import { LurkdError, type ErrorCode } from '../errors.js';
 import { adapterFor as defaultAdapterFor, type EngineAdapter, type ExtractContext } from '../extract/engine.js';
+import { isRedditUrl, parseRedditImport, REDDIT_IMPORT_SOURCE_ID, redditThreadId, redditThreadUrl, redditUnsupported } from '../extract/reddit-import.js';
 import { formatStructure, reduceStructure, SAMPLE_LIMITS, type StructNode } from '../extract/sample.js';
 import { withoutAuthor } from '../extract/scrub.js';
-import { excerpt, nameResolver, renderThread, toRenderInput, type NameMode, type RenderInput } from '../output/render.js';
+import { quotedName } from '../output/quoted.js';
+import { excerpt, IMPORTED_BY, nameResolver, renderThread, toRenderInput, type NameMode, type RenderInput } from '../output/render.js';
 import { limitsFor, realClock, RunLimiter, type Clock, type HostPacer } from '../policy/limiter.js';
-import { checkNavigable, isAllowedHost } from '../policy/urls.js';
+import { checkNavigable, isAllowedHost, isRedditHost } from '../policy/urls.js';
 import { renderNames, stripMarkers } from '../pseudonym.js';
+import {
+  analysableUrl,
+  analyseSource,
+  automationPrefill,
+  checkResolvesPublic,
+  detectForum,
+  findAutomationClause,
+  PAGE_TEXT_SCRIPT,
+  readSignals,
+  rulesPageUrls,
+  SIGNALS_SCRIPT,
+  type AnalyseOut,
+  type ForumDetection,
+  type ResolveHost,
+  type RulesCheck,
+  type RulesPageOutcome,
+} from '../sources/analyse.js';
 import { draftRefused, type DraftStore, type SampleStore } from '../sources/drafts.js';
 import type { Registry, SessionView } from '../sources/registry.js';
 import type { SourceConfig } from '../sources/schema.js';
-import type { AuthorSignals, ExtractedPost, SearchHit } from '../types.js';
+import type { AuthorSignals, ExtractedPost, ImportVia, SearchHit } from '../types.js';
 import type { FetchQueue, JobKind, ProgressSink } from './queue.js';
 
 // The one place where a request from an agent turns into browser work. Every read runs as one job
@@ -50,6 +70,11 @@ export interface FetchResponse {
   otherResults: SearchHit[];
   stopped: { code: ErrorCode; message: string } | null;
   requestsUsed: number;
+  /**
+   * D48: set when the source's session had expired, so the forum was read without login. Absent
+   * for an archive answer, a source never logged in and a session that is still logged in.
+   */
+  readWithoutLogin?: 'session_expired';
 }
 
 export interface SessionStatusOut {
@@ -88,6 +113,28 @@ export interface AuthorSignalsOut {
   cached: boolean;
 }
 
+/** D50: what `lurkd import reddit` and the page's upload saved. `title` is rendered with the source's name mode. */
+export interface RedditImportOut {
+  source: string;
+  threadId: number;
+  url: string;
+  title: string;
+  /** The post and its comments, as numbered in the archive. */
+  posts: number;
+  comments: number;
+  /** Comments the file holds past the first MAX_IMPORT_COMMENTS, which the import did not keep (C5). */
+  notKept: number;
+  /** Comments the file's "more" stubs stand for; the file does not hold them. */
+  notInFile: number;
+  /** True when the archive held this thread already and the import replaced it. */
+  replaced: boolean;
+  /** When the import this one replaced was made; null when nothing was replaced. */
+  replacedImportAt: string | null;
+  /** The route the file came through, as the thread's front matter says it: "page upload" or "lurkd import / API". */
+  importedBy: string;
+  importedAt: string;
+}
+
 export type SampleOut =
   | { status: 'sampled'; host: string; url: string; structure: string; sampledAt: string }
   | { status: 'needs_user'; host: string; message: string }
@@ -108,7 +155,22 @@ export interface FetchServiceDeps {
   adapterFor?: (s: SourceConfig) => EngineAdapter;
   /** The page timeout handed to PageReader (D31: 45 s); tests shorten it. */
   pageTimeoutMs?: number;
+  /**
+   * Tests only: `analyse` may open 127.0.0.1 and localhost, where the fixture forums run
+   * (`AddressRules.allowLoopback`). lurkd start never sets it.
+   */
+  allowLoopbackForTests?: boolean;
+  /**
+   * Resolves the host `analyse` is about to open (default node:dns `lookup` with `all: true`).
+   * Unit tests pass their own, so they need no network.
+   */
+  resolveHost?: ResolveHost;
 }
+
+/** Errors on a rules page after which "Analyse" reads no further page (D49). */
+const RULES_STOP: ReadonlySet<ErrorCode> = new Set<ErrorCode>(['challenge', 'run_cap', 'daily_cap', 'server_unavailable', 'browser_unavailable']);
+
+const defaultResolveHost: ResolveHost = (host) => lookup(host, { all: true });
 
 const MINUTE = 60_000;
 const DAY = 86_400_000;
@@ -117,6 +179,8 @@ const SESSION_CHECK_EVERY_MS = 15 * MINUTE;
 /** D33: cached author signals are served this long. */
 const SIGNALS_TTL_MS = 7 * DAY;
 const SEARCH_LIMIT = 10;
+/** D48: the front matter note of a thread read without login because the session had expired. */
+export const READ_WITHOUT_LOGIN_NOTE = 'read without login: the session expired';
 const DEFAULT_ARCHIVE_LIMIT = 10;
 
 const FETCH_LIMITS = {
@@ -198,7 +262,7 @@ function withSource(e: unknown, sourceId: string): LurkdError {
 }
 
 function searchUnsupported(source: SourceConfig): LurkdError {
-  return new LurkdError('search_unsupported', `${source.name} cannot be searched through lurkd. Give the url of a thread instead.`, {
+  return new LurkdError('search_unsupported', `${quotedName(source.name)} cannot be searched through lurkd. Give the url of a thread instead.`, {
     sourceId: source.id,
   });
 }
@@ -232,6 +296,8 @@ export class FetchService {
   private readonly clock: Clock;
   private readonly adapterFor: (s: SourceConfig) => EngineAdapter;
   private readonly pageTimeoutMs: number | undefined;
+  private readonly allowLoopback: boolean;
+  private readonly resolveHost: ResolveHost;
 
   constructor(deps: FetchServiceDeps) {
     this.registry = deps.registry;
@@ -246,6 +312,8 @@ export class FetchService {
     this.clock = deps.clock ?? realClock;
     this.adapterFor = deps.adapterFor ?? defaultAdapterFor;
     this.pageTimeoutMs = deps.pageTimeoutMs;
+    this.allowLoopback = deps.allowLoopbackForTests === true;
+    this.resolveHost = deps.resolveHost ?? defaultResolveHost;
   }
 
   // ---- source.fetch ----
@@ -265,6 +333,8 @@ export class FetchService {
   }
 
   private async fetchFor(req: FetchRequest): Promise<FetchResponse> {
+    // D50: a Reddit address is never opened, whatever source it is asked of. An imported copy answers.
+    if (req.url !== undefined && isRedditUrl(req.url)) return this.importedReddit(req, req.url);
     const source = this.registry.assertUsable(req.source);
     const adapter = this.adapterFor(source);
     let threadUrl: string | null = null;
@@ -303,11 +373,13 @@ export class FetchService {
     let rest: SearchHit[] = [];
     let read = 0;
     let used = (): number => 0;
+    let withoutLogin = false;
     const mode = this.nameMode(source);
     try {
       await this.withReader(source, sink, async (ctx, limiter) => {
         used = () => limiter.used;
-        await this.checkSessionBeforeRead(ctx, adapter, sink);
+        withoutLogin = await this.checkSessionBeforeRead(ctx, adapter, sink);
+        const note = withoutLogin ? READ_WITHOUT_LOGIN_NOTE : null;
         if (threadUrl !== null) {
           planned = [{ url: threadUrl, title: threadUrl, posts: null }];
         } else {
@@ -326,7 +398,7 @@ export class FetchService {
           const fetchedAt = this.nowIso();
           this.threads.save(source.id, t, fetchedAt);
           read = i + 1;
-          const r = renderThread(toRenderInput(source.id, t, fetchedAt), mode, { fromPost, maxChars: share });
+          const r = renderThread({ ...toRenderInput(source.id, t, fetchedAt), note }, mode, { fromPost, maxChars: share });
           out.push({ url: t.url, title: oneLine(renderNames(t.title, mode.nameFor)), ...r, quality: t.quality, fromArchive: false });
           sink.update({ requestsUsed: limiter.used });
         }
@@ -339,30 +411,46 @@ export class FetchService {
       sink.update({ state: 'stopped', message: formatError(err).replace(/\s+/g, ' ').trim() });
       // The planned hits that were not read go back with the other results.
       const unread = threadUrl === null ? planned.slice(read) : [];
-      return { jobId: sink.jobId, source: source.id, threads: out, otherResults: [...unread, ...rest], stopped: { code: err.code, message: err.message }, requestsUsed: used() };
+      return {
+        jobId: sink.jobId,
+        source: source.id,
+        threads: out,
+        otherResults: [...unread, ...rest],
+        stopped: { code: err.code, message: err.message },
+        requestsUsed: used(),
+        ...(withoutLogin ? { readWithoutLogin: 'session_expired' as const } : {}),
+      };
     }
     this.clearBlock(source.id);
-    sink.update({ requestsUsed: used(), message: `${plural(out.length, 'thread', 'threads')} read with ${plural(used(), 'request', 'requests')}.` });
-    return { jobId: sink.jobId, source: source.id, threads: out, otherResults: rest, stopped: null, requestsUsed: used() };
+    const done = `${plural(out.length, 'thread', 'threads')} read with ${plural(used(), 'request', 'requests')}.`;
+    sink.update({ requestsUsed: used(), message: withoutLogin ? `${done} Read without login: the session expired.` : done });
+    return {
+      jobId: sink.jobId,
+      source: source.id,
+      threads: out,
+      otherResults: rest,
+      stopped: null,
+      requestsUsed: used(),
+      ...(withoutLogin ? { readWithoutLogin: 'session_expired' as const } : {}),
+    };
   }
 
   /**
    * C2: a logged-in session is checked before a read when the last check is older than 15
-   * minutes. An expired session stops the read with `needs_login` before any thread is requested.
+   * minutes. D48: an expired session no longer stops the read. The check marks it expired and the
+   * read goes on as a reader without login would; a login wall during it still stops it with
+   * `needs_login` (noteBlock). Returns true when the read runs on an expired session, found now
+   * or earlier; a session never logged in returns false, as before.
    */
-  private async checkSessionBeforeRead(ctx: ExtractContext, adapter: EngineAdapter, sink: ProgressSink): Promise<void> {
+  private async checkSessionBeforeRead(ctx: ExtractContext, adapter: EngineAdapter, sink: ProgressSink): Promise<boolean> {
     const { source } = ctx;
     const s = this.state.getSession(source.id);
-    if (source.login_url === null || s.state !== 'logged_in') return;
+    if (source.login_url === null) return false;
+    if (s.state !== 'logged_in') return s.state === 'expired';
     const last = s.lastCheckAt === null ? Number.NaN : Date.parse(s.lastCheckAt);
-    if (Number.isFinite(last) && this.clock.now() - last < SESSION_CHECK_EVERY_MS) return;
+    if (Number.isFinite(last) && this.clock.now() - last < SESSION_CHECK_EVERY_MS) return false;
     sink.update({ phase: 'session' });
-    const ok = await this.checkSessionOnce(ctx, adapter);
-    if (ok) return;
-    throw new LurkdError('needs_login', `The session of ${source.name} has expired. Log in from the lurkd page, then try again.`, {
-      url: source.login_url,
-      sourceId: source.id,
-    });
+    return !(await this.checkSessionOnce(ctx, adapter));
   }
 
   /** Runs `checkSession` and stores what it found: logged in, or expired (a `never` session stays `never`). */
@@ -384,6 +472,60 @@ export class FetchService {
       this.state.setSession(id, { state: before.state === 'logged_in' ? 'expired' : before.state, lastCheckAt: at });
     }
     return ok;
+  }
+
+  /**
+   * D50: the archived copy of an imported Reddit thread, found by its thread id, rendered with the
+   * name mode of the source it was imported under. With `refresh`, or when nothing was imported,
+   * `unsupported` with the import steps. No browser, no request.
+   */
+  private importedReddit(req: FetchRequest, url: string): FetchResponse {
+    const id = redditThreadId(url);
+    const stored = id === null || req.refresh ? null : this.threads.getByUrl(redditThreadUrl(id));
+    if (!stored) throw redditUnsupported(id);
+    const t = stored.thread;
+    const mode = this.nameModeById(t.sourceId);
+    const r = renderThread(this.storedInput(t, stored.posts), mode, { fromPost: req.fromPost, maxChars: req.maxChars });
+    return {
+      jobId: null,
+      source: t.sourceId,
+      threads: [{ url: t.url, title: oneLine(renderNames(t.title, mode.nameFor)), ...r, quality: t.quality, fromArchive: true }],
+      otherResults: [],
+      stopped: null,
+      requestsUsed: 0,
+    };
+  }
+
+  // ---- lurkd import reddit and the page's upload (D50) ----
+
+  /**
+   * Parses the text of a saved Reddit thread file and stores it in the archive under reddit-import,
+   * replacing an earlier import of the same thread. The thread keeps the route the file came
+   * through (`via`) and, when it replaced one, the date of the earlier import. A file that is not
+   * one Reddit thread is refused with `invalid_request` and nothing is stored. No browser, no
+   * request: the text is all lurkd reads.
+   */
+  importReddit(text: string, via: ImportVia): RedditImportOut {
+    const { thread, comments, notKept, notInFile } = parseRedditImport(text);
+    const importedAt = this.nowIso();
+    const earlier = this.threads.getByUrl(thread.url)?.thread ?? null;
+    const replacedImportAt = earlier === null ? null : earlier.fetchedAt;
+    const threadId = this.threads.save(REDDIT_IMPORT_SOURCE_ID, thread, importedAt, { via, replacedImportAt });
+    const mode = this.nameModeById(REDDIT_IMPORT_SOURCE_ID);
+    return {
+      source: REDDIT_IMPORT_SOURCE_ID,
+      threadId,
+      url: thread.url,
+      title: oneLine(renderNames(thread.title, mode.nameFor)),
+      posts: thread.posts.length,
+      comments,
+      notKept,
+      notInFile,
+      replaced: earlier !== null,
+      replacedImportAt,
+      importedBy: IMPORTED_BY[via],
+      importedAt,
+    };
   }
 
   // ---- session.status ----
@@ -525,12 +667,12 @@ export class FetchService {
   private async authorSignalsFor(sourceId: string, pseudonymId: string): Promise<AuthorSignalsOut> {
     const source = this.registry.get(sourceId);
     if (!source.author_signals.profile_lookup)
-      throw invalid(`${source.name} does not allow profile lookups (author_signals.profile_lookup is false).`, { sourceId });
+      throw invalid(`${quotedName(source.name)} does not allow profile lookups (author_signals.profile_lookup is false).`, { sourceId });
     const id = pseudonymId.trim();
     // The input is never echoed: it could be a real name.
     const author = this.threads.lookupAuthor(sourceId, id);
     if (!author)
-      throw new LurkdError('not_found', `No thread lurkd has read from ${source.name} has this author. Use an author pseudonym from a thread lurkd has read.`, {
+      throw new LurkdError('not_found', `No thread lurkd has read from ${quotedName(source.name)} has this author. Use an author pseudonym from a thread lurkd has read.`, {
         sourceId,
       });
     // The name mode is read when the answer is built, so a switch made while the job waited applies.
@@ -551,7 +693,7 @@ export class FetchService {
       // Read again: the source may have been switched off or lost profile lookups while queued.
       const usable = this.registry.assertUsable(sourceId);
       if (!usable.author_signals.profile_lookup)
-        throw invalid(`${usable.name} does not allow profile lookups (author_signals.profile_lookup is false).`, { sourceId });
+        throw invalid(`${quotedName(usable.name)} does not allow profile lookups (author_signals.profile_lookup is false).`, { sourceId });
       const adapter = this.adapterFor(usable);
       sink.update({ phase: 'signals' });
       try {
@@ -565,7 +707,7 @@ export class FetchService {
         // A forum may refuse one profile (Discourse answers 403 for a hidden one) while the session
         // is fine: that is "no signals", not a login wall, and the session state stays as it is.
         if (isPlainRefusal(err))
-          throw new LurkdError('not_found', `${usable.name} did not serve this author's profile, so author signals are unavailable.`, { sourceId });
+          throw new LurkdError('not_found', `${quotedName(usable.name)} did not serve this author's profile, so author signals are unavailable.`, { sourceId });
         this.noteBlock(usable, 'signals', err);
         throw err;
       }
@@ -580,7 +722,8 @@ export class FetchService {
    * D15 with the C3 amendment. With `draftYaml`: the draft is stored for the host of `url` (a
    * refused draft throws `invalid_request` with `details.errors`, P36). Otherwise a stored sample
    * of the host is returned first; a host that has a source gets one headless `sample` job; an
-   * unknown host is queued for the user to open in the lurkd page.
+   * unknown host is queued for the user to open in the lurkd page, once the address passes
+   * `analysableUrl` and `checkResolvesPublic` (M2), as for "Analyse".
    */
   async sample(url: string, draftYaml?: string): Promise<SampleOut> {
     let u: URL;
@@ -596,6 +739,8 @@ export class FetchService {
     u.password = '';
     // The bare hostname, never host:port (Task 13 carry).
     const host = u.hostname;
+    // D50: no sample, draft or window for Reddit.
+    if (isRedditHost(host)) throw redditUnsupported(redditThreadId(u.href));
     if (draftYaml !== undefined) {
       const r = this.drafts.submit(draftYaml, host);
       if (!r.ok) throw draftRefused(r.errors);
@@ -606,7 +751,13 @@ export class FetchService {
       return { status: 'sampled', host: stored.host, url: stored.url, structure: stored.structure, sampledAt: stored.sampledAt };
     const known = this.registry.sourceForHost(host);
     if (!known) {
-      this.samples.request(host, u.href);
+      // M2: the sample window is an ordinary browser window the user drives, outside the guard,
+      // so an address joins its queue only under the rules of "Analyse": no local or private
+      // host, https only, and a name that resolves to public addresses alone. The same messages.
+      const rules = { allowLoopback: this.allowLoopback };
+      const checked = analysableUrl(u.href, rules);
+      await checkResolvesPublic(checked, this.resolveHost, rules);
+      this.samples.request(host, checked.href);
       return {
         status: 'needs_user',
         host,
@@ -647,6 +798,107 @@ export class FetchService {
     this.samples.save(host, url, structure);
     const saved = this.samples.get(host);
     return { status: 'sampled', host, url, structure, sampledAt: saved?.sampledAt ?? this.nowIso() };
+  }
+
+  // ---- "Add a forum" (D45) ----
+
+  /**
+   * For the lurkd page only (the route takes the page's cookie and Origin): an agent never gets
+   * here, so lurkd loads only an address the user gave or chose to analyse. A host a source
+   * already claims answers with its id and loads nothing. Otherwise one `analyse` job opens the
+   * address once through the guarded PageReader, with a throwaway read-only source for its host
+   * (`analyseSource`: engine generic, draft limits, the built-in deny rules), reads the signals
+   * with one `evaluate` and returns `detectForum`'s guess. A login wall still has the forum's
+   * markup, so its signals are read and the block comes back with them; a human check comes back
+   * as `blocked` with nothing read. Then the rules pages are read (`readRulesPages`, D49) and a
+   * clause that forbids automated access prefills `automation`. Nothing is stored here: no sample,
+   * no session state; the route writes a found clause to the forbidden log.
+   *
+   * Before the job, the host is looked up and refused when any of its addresses is not public
+   * (`checkResolvesPublic`), so a public name that points at 127.0.0.1 or a private network is
+   * not opened. DNS rebinding between this lookup and the browser's own is a known residual gap.
+   */
+  async analyse(rawUrl: string): Promise<AnalyseOut> {
+    const rules = { allowLoopback: this.allowLoopback };
+    const u = analysableUrl(rawUrl, rules);
+    const host = u.hostname;
+    // D50: Reddit is imported from saved files, never opened.
+    if (isRedditHost(host)) throw redditUnsupported(redditThreadId(u.href));
+    const known = this.registry.sourceForHost(host);
+    if (known) return { status: 'known', host, sourceId: known.id };
+    const source = analyseSource(u, this.nowIso().slice(0, 10));
+    checkNavigable(source, u.href);
+    await checkResolvesPublic(u, this.resolveHost, rules);
+    this.refuseDuringHandoff();
+    return this.queue.run({ sourceId: source.id, kind: 'analyse' }, async (sink) => {
+      sink.update({ phase: 'analyse' });
+      return this.withReader(
+        source,
+        sink,
+        async (ctx): Promise<AnalyseOut> => {
+          let login: { kind: 'login'; message: string } | null = null;
+          try {
+            await ctx.reader.open(u.href);
+          } catch (e) {
+            if (!(e instanceof LurkdError) || !isBlock(e)) throw e;
+            if (e.code === 'challenge')
+              return {
+                status: 'blocked',
+                host,
+                block: { kind: 'challenge', message: `${host} shows a human check, so lurkd could not read the page. lurkd does not try to get past it.` },
+              };
+            login = { kind: 'login', message: `${host} asks for a login on this page. Check the details below; after approval, log in from the lurkd page.` };
+          }
+          // The address comes from Playwright, not from the page; the rest is page text, checked by readSignals.
+          const raw = await ctx.reader.evaluate<unknown>(SIGNALS_SCRIPT);
+          const pageUrl = ctx.reader.page.url();
+          const forum = detectForum(readSignals(raw, pageUrl));
+          const rules = await this.readRulesPages(ctx, forum, pageUrl);
+          return { status: 'analysed', host, forum, block: login, rules, automation: automationPrefill(rules) };
+        },
+        [u.href],
+      );
+    });
+  }
+
+  /**
+   * D49: after the analysed page, at most two rules pages of its host (`rulesPageUrls`, behind the
+   * deny rules of the throwaway source), opened through the same reader, so the guard, the pacing
+   * and the request count apply to them as to any request. Each page's text is searched with
+   * `findAutomationClause`; the first clause found ends the reading. No rules page can fail the
+   * analysis: a login wall, an HTTP error, another host or a timeout is noted and the next page is
+   * tried; a human check, a request cap or a shutdown ends the reading at once (D8: no retry).
+   */
+  private async readRulesPages(ctx: ExtractContext, forum: ForumDetection, pageUrl: string): Promise<RulesCheck> {
+    const allowed = (url: string): boolean => {
+      try {
+        checkNavigable(ctx.source, url);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const out: RulesCheck = { pages: [], clause: null };
+    for (const url of rulesPageUrls(forum, pageUrl, allowed, { allowLoopback: this.allowLoopback })) {
+      let outcome: RulesPageOutcome = 'read';
+      let stop = false;
+      try {
+        const nav = await ctx.reader.open(url);
+        if (nav.status !== null && (nav.status < 200 || nav.status >= 300)) outcome = 'unavailable';
+        else {
+          const text = await ctx.reader.evaluate<unknown>(PAGE_TEXT_SCRIPT);
+          const sentence = findAutomationClause(typeof text === 'string' ? text : '');
+          if (sentence !== null) out.clause = { url, sentence };
+        }
+      } catch (e) {
+        if (!(e instanceof LurkdError)) throw e;
+        outcome = e.code === 'needs_login' ? 'login' : e.code === 'challenge' ? 'challenge' : e.code === 'off_domain' ? 'off_domain' : 'failed';
+        stop = RULES_STOP.has(e.code);
+      }
+      out.pages.push({ url, outcome });
+      if (out.clause !== null || stop) break;
+    }
+    return out;
   }
 
   // ---- internals ----
@@ -750,6 +1002,7 @@ export class FetchService {
       extraction: t.extraction,
       quality: t.quality,
       posts,
+      imported: t.imported,
     };
   }
 

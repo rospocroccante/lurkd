@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
-import { BUILTIN_DENY, writeWordIn } from '../policy/urls.js';
+import { BUILTIN_DENY, isRedditHost, writeWordIn } from '../policy/urls.js';
 import type { Engine } from '../types.js';
 
 export interface Selectors {
@@ -28,6 +28,8 @@ export interface SourceConfig {
   base_url: string;
   domains: string[];
   login_url: string | null;
+  // D47: the forum's registration page, opened in the handoff window; the person signs up by hand.
+  signup_url: string | null;
   // Contains {query}.
   search_url: string | null;
   // D14: the only POSTs that may leave the browser.
@@ -49,6 +51,7 @@ export interface SourceConfig {
 /** Path segments that name a write action; the same list as `BUILTIN_DENY` (src/policy/urls.ts). */
 export const WRITE_WORDS: readonly string[] = BUILTIN_DENY;
 
+// `import` is left out on purpose: only the built-in reddit-import source has it (src/sources/builtin.ts, D50).
 const ENGINES = ['discourse', 'xenforo', 'phpbb', 'vbulletin', 'generic', 'custom'] as const satisfies readonly Engine[];
 const PROFILE_LOOKUP_ENGINES: ReadonlySet<Engine> = new Set(['discourse', 'xenforo']);
 const LOCAL_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost']);
@@ -157,11 +160,19 @@ const sourceSchema = z
       base_url: browserUrl(),
       domains: z
         .array(
-          z.string(typed('must be a string')).regex(HOSTNAME, 'must be a bare lowercase hostname, without scheme, port, path or wildcard'),
+          z
+            .string(typed('must be a string'))
+            .regex(HOSTNAME, 'must be a bare lowercase hostname, without scheme, port, path or wildcard')
+            // D50: Reddit is only imported from saved files, so no file can make it a live source.
+            .refine(
+              (d) => !isRedditHost(d),
+              'is a Reddit host: lurkd does not read Reddit live, so no source can list it. Import saved threads with lurkd import reddit <file>.',
+            ),
           typed('must be a list of hostnames'),
         )
         .min(1, 'must list at least one hostname'),
       login_url: browserUrl().nullable().default(null),
+      signup_url: browserUrl().nullable().default(null),
       search_url: browserUrl()
         .refine((s) => s.includes('{query}'), 'must contain {query}')
         .nullable()
@@ -230,6 +241,7 @@ function crossFieldChecks(value: unknown, report: Report): void {
     const urls: [(string | number)[], unknown][] = [
       [['base_url'], value.base_url],
       [['login_url'], value.login_url],
+      [['signup_url'], value.signup_url],
       [['search_url'], value.search_url],
       [['session_check', 'url'], session],
     ];

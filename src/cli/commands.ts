@@ -1,12 +1,16 @@
 import { parseArgs } from 'node:util';
 import type { ApiClient, Query } from '../client/api.js';
-import { formatArchive, formatError, formatFetch, formatSample, formatSession, formatSignals, formatSources } from '../client/format.js';
+import { formatArchive, formatError, formatFetch, formatImport, formatSample, formatSession, formatSignals, formatSources } from '../client/format.js';
 import { EXIT_CODE, LurkdError } from '../errors.js';
-import type { ArchiveHitOut, AuthorSignalsOut, FetchResponse, SampleOut, SessionStatusOut } from '../fetch/service.js';
+import { MAX_IMPORT_BYTES, parseRedditImport } from '../extract/reddit-import.js';
+import type { ArchiveHitOut, AuthorSignalsOut, FetchResponse, RedditImportOut, SampleOut, SessionStatusOut } from '../fetch/service.js';
+import type { AddOut } from '../sources/analyse.js';
 import type { SourceView } from '../sources/registry.js';
 
-// The six agent tools as shell commands (D4): each one is one call to the lurkd API and prints what
-// the MCP tool prints. `--json` prints the raw answer instead, except that session entries are
+// The six agent tools as shell commands (D4), plus `add` (D45) and `import` (D50), which have no
+// MCP tool. `import reddit <file>` reads a local file the user saved and sends its content. Each is
+// one call to the lurkd API and prints what the MCP tool prints. `add` only queues an address for
+// the lurkd page; lurkd opens it when the user presses "Analyse" there, never because of this call. `--json` prints the raw answer instead, except that session entries are
 // projected like the attention entries of `lurkd status --json`: no login URL, no block URL.
 // Errors go through `formatError` on stderr, so no token, run file content or `details` is printed.
 // Exit codes: 0 ok, 2 usage, then EXIT_CODE of the error (3 the user has to act, 4 a cap).
@@ -35,8 +39,8 @@ type Options = NonNullable<Parameters<typeof parseArgs>[0]>['options'];
 
 const COMMANDS: Record<string, Command> = {
   sources: {
-    usage: 'lurkd sources [query] [--topic t] [--json]',
-    summary: ['List the sources that match a query or a topic.'],
+    usage: 'lurkd sources [query] [--topic t] [--group name] [--json]',
+    summary: ['List the sources that match a query or a topic, or the sources in one of your groups.'],
     run: sources,
   },
   fetch: {
@@ -64,11 +68,24 @@ const COMMANDS: Record<string, Command> = {
     summary: ['Show the total posts and join date of one pseudonymised author.'],
     run: author,
   },
+  add: {
+    usage: 'lurkd add <url> [--json]',
+    summary: ['Queue a Discourse or XenForo forum for "Add a forum" on the lurkd page.', 'lurkd opens the address only when the user presses "Analyse" there.'],
+    run: add,
+  },
+  import: {
+    usage: 'lurkd import reddit <file> [--json]',
+    summary: [
+      'Import one Reddit thread you saved from your own browser (its address with .json',
+      'added) into the archive. lurkd reads the local file only and never contacts Reddit.',
+    ],
+    run: importThread,
+  },
 };
 
 export const MIRROR_COMMANDS: readonly string[] = Object.keys(COMMANDS);
 
-/** The help lines of the six mirror commands, for the bin's `--help`. */
+/** The help lines of the mirror commands and `add`, for the bin's `--help`. */
 export const MIRROR_HELP: string = Object.values(COMMANDS)
   .map((c) => `  ${c.usage.slice('lurkd '.length)}\n${c.summary.map((l) => `                      ${l}`).join('\n')}`)
   .join('\n');
@@ -142,8 +159,8 @@ function print(deps: CommandDeps, json: unknown, raw: () => unknown, text: () =>
 }
 
 async function sources(argv: string[], deps: CommandDeps): Promise<void> {
-  const { values, positionals } = parse(argv, { topic: { type: 'string' } }, ['query'], 0);
-  const query: Query = defined({ q: positionals[0], topic: strFlag(values.topic) });
+  const { values, positionals } = parse(argv, { topic: { type: 'string' }, group: { type: 'string' } }, ['query'], 0);
+  const query: Query = defined({ q: positionals[0], topic: strFlag(values.topic), group: strFlag(values.group) });
   const list = await deps.client.get<SourceView[]>('/api/sources', query);
   print(deps, values.json, () => list.map(sourceEntry), () => formatSources(list));
 }
@@ -228,6 +245,65 @@ async function author(argv: string[], deps: CommandDeps): Promise<void> {
   const { values, positionals } = parse(argv, {}, ['source', 'pseudonym'], 2);
   const s = await deps.client.post<AuthorSignalsOut>('/api/author-signals', { source: positionals[0], author: positionals[1] });
   print(deps, values.json, () => s, () => formatSignals(s));
+}
+
+async function add(argv: string[], deps: CommandDeps): Promise<void> {
+  const { values, positionals } = parse(argv, {}, ['url'], 1);
+  const r = await deps.client.post<AddOut>('/api/add', { url: positionals[0] });
+  print(deps, values.json, () => r, () => formatAdd(r));
+}
+
+/**
+ * D50: the CLI reads the file itself (one regular file, at most 20 MB, no folder, no pattern),
+ * checks that it is one Reddit thread, and sends its content; the server never gets a path.
+ * A file that fails the check is refused before any server call and its content is never printed.
+ */
+async function importThread(argv: string[], deps: CommandDeps): Promise<void> {
+  let parsed;
+  try {
+    parsed = parse(argv, {}, ['kind', 'file'], 0);
+  } catch (e) {
+    // A shell pattern arrives as several files: one file per call (D50).
+    if (e instanceof UsageError && e.message.startsWith('Too many arguments'))
+      throw new UsageError('lurkd import reddit takes one file per call, not several and not a pattern.');
+    throw e;
+  }
+  const { values, positionals } = parsed;
+  if (positionals.length >= 1 && positionals[0] !== 'reddit') throw new UsageError('lurkd imports Reddit threads only: lurkd import reddit <file>.');
+  if (positionals.length < 2) throw new UsageError(`Missing argument: <${positionals.length === 0 ? 'kind' : 'file'}>.`);
+  const file = positionals[1]!;
+  const refuse = (message: string) => new LurkdError('invalid_request', message);
+  if (deps.statFile !== undefined) {
+    let st;
+    try {
+      st = deps.statFile(file);
+    } catch {
+      throw refuse(`Cannot read the file ${file}.`);
+    }
+    if (!st.isFile) throw refuse(`${file} is not a regular file. lurkd imports one saved thread file per call, not a folder.`);
+    if (st.size > MAX_IMPORT_BYTES) throw refuse(`${file} is larger than 20 MB, so lurkd does not import it.`);
+  }
+  let text: string;
+  try {
+    text = deps.readFile(file);
+  } catch {
+    // The reason is not repeated: the path is what the user needs.
+    throw refuse(`Cannot read the file ${file}.`);
+  }
+  // Checked here first, so a wrong file starts no server; the server checks the content again.
+  parseRedditImport(text);
+  const r = await deps.client.post<RedditImportOut>('/api/import/reddit', JSON.parse(text.replace(/^\uFEFF/, '')) as unknown);
+  print(deps, values.json, () => r, () => formatImport(r));
+}
+
+// D52: no page address here. The page opens from a one-time link that `lurkd open` mints and
+// opens in the user's browser, so the agent is told the command, never a link.
+function formatAdd(r: AddOut): string {
+  if (r.status === 'known') return `${r.host} is already the lurkd source ${r.sourceId}. Read it with lurkd fetch ${r.sourceId}.`;
+  const where = 'run lurkd open, which opens the lurkd page,';
+  if (r.status === 'already_queued')
+    return `${r.host} is already waiting on the lurkd page with the address ${r.url}, and lurkd keeps that one. Ask the user to ${where} and press "Analyse" next to ${r.host} under "Add a forum", or to dismiss it there before you queue another address.`;
+  return `${r.host} is waiting on the lurkd page. Ask the user to ${where} and press "Analyse" next to ${r.host} under "Add a forum". lurkd does not open the address until they do.`;
 }
 
 /** Runs one mirror command and returns the process exit code. */

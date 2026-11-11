@@ -72,6 +72,11 @@ beforeAll(async () => {
     '/search.json': json(search),
     '/threads/sample.55/': html(samplePage),
     '/threads/hang.56/': html(hangingPage),
+    // D48: an anonymous visitor gets no current user, and the gated topic shows a login form.
+    '/session/current.json': json({ errors: ['You are not permitted to view the requested resource.'] }, 404),
+    '/t/gated-topic/200': html(
+      '<!doctype html><title>Log in</title><body><form action="/session" method="post"><input name="login"><input type="password" name="password"></form></body>',
+    ),
   });
   origin = server.origin;
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'lurkd-service-'));
@@ -175,5 +180,77 @@ describe('FetchService end to end in headless Chromium', () => {
     expect(samples.get('127.0.0.1')?.structure).toBeNull();
     const r = await quick.sample(`${origin}/threads/sample.55/`);
     expect(r.status).toBe('sampled');
+  });
+});
+
+describe('a read on an expired session in headless Chromium (D48)', () => {
+  let gdb: Database.Database;
+  let gstate: StateStore;
+  let gsvc: FetchService;
+
+  beforeAll(() => {
+    const dir = fs.mkdtempSync(path.join(home, 'gated-'));
+    const seedDir = path.join(dir, 'seed');
+    const userDir = path.join(dir, 'sources');
+    fs.mkdirSync(seedDir);
+    fs.mkdirSync(userDir);
+    fs.writeFileSync(
+      path.join(userDir, 'gated.yaml'),
+      YAML.stringify({
+        id: 'gated',
+        name: 'Gated forum',
+        topics: ['testing'],
+        engine: 'discourse',
+        base_url: origin,
+        domains: ['127.0.0.1'],
+        login_url: `${origin}/login`,
+        automation: { policy: 'allowed', rule_url: `${origin}/rules`, rule_quote: 'Bots welcome.', checked_at: '2026-11-08' },
+        rate_limit: { min_delay_s: 1 },
+      }),
+    );
+    // Its own archive, so the topic the first test archived under disc stays there.
+    gdb = openArchive(path.join(dir, 'archive.db'));
+    gstate = new StateStore(gdb);
+    const registry = Registry.load({ seedDir, userDir, state: gstate });
+    expect(registry.errors()).toEqual([]);
+    gsvc = new FetchService({
+      ...deps,
+      registry,
+      state: gstate,
+      threads: new ThreadStore(gdb, SALT),
+      samples: new SampleStore(gdb),
+      drafts: new DraftStore(gdb, registry, { state: gstate }),
+      pacer: new HostPacer(),
+    });
+  });
+
+  afterAll(() => gdb?.close());
+
+  it('reads a public thread without login, then stops with needs_login at a login wall', async () => {
+    // Logged in a day ago and not checked since: the read checks the session first.
+    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
+    gstate.setSession('gated', { state: 'logged_in', lastLoginAt: dayAgo, lastCheckAt: dayAgo });
+    const before = server.requests.length;
+    const r = await gsvc.fetch(parseFetchRequest({ source: 'gated', url: `${origin}/t/test-topic/100` }));
+    const paths = server.requests.slice(before).map((q) => q.url);
+    // The session check runs first, and the topic is still requested after it found no user.
+    expect(paths).toContain('/session/current.json');
+    expect(paths.indexOf('/session/current.json')).toBeLessThan(paths.indexOf('/t/test-topic/100.json'));
+    expect(r).toMatchObject({ stopped: null, readWithoutLogin: 'session_expired' });
+    expect(r.threads).toHaveLength(1);
+    const md = r.threads[0]!.markdown;
+    expect(md).toContain('post_count: 45');
+    expect(md.split('\n')).toContain('note: "read without login: the session expired"');
+    await expect(gsvc.sessionStatus('gated')).resolves.toEqual([expect.objectContaining({ state: 'expired', lastBlock: null })]);
+    expect(queue.snapshot().at(-1)).toMatchObject({ jobId: r.jobId, state: 'done', message: expect.stringMatching(/Read without login: the session expired\.$/) });
+
+    // The same expired session meets a login wall: the read stops as it did before D48.
+    await expect(gsvc.fetch(parseFetchRequest({ source: 'gated', url: `${origin}/t/gated-topic/200` }))).rejects.toMatchObject({
+      code: 'needs_login',
+      details: expect.objectContaining({ source: 'gated' }),
+    });
+    const [status] = await gsvc.sessionStatus('gated');
+    expect(status).toMatchObject({ state: 'expired', lastBlock: { kind: 'login' } });
+    expect(queue.snapshot().at(-1)).toMatchObject({ state: 'failed', message: expect.stringMatching(/^Error needs_login:/) });
   });
 });

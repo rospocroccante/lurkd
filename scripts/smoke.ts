@@ -62,8 +62,49 @@ function publicReadSources(): SourceConfig[] {
   return out;
 }
 
-/** The page routes want the cookie and the page's Origin; this is what the lurkd page sends. */
-function pagePost(port: number, token: string, route: string, body: unknown): Promise<number> {
+/** D52: a one-time page link, minted as `lurkd open` mints it: the token as Bearer, no Origin. */
+function pageLink(port: number, token: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/api/page-link', method: 'POST', headers: { authorization: `Bearer ${token}` } }, (res) => {
+      let body = '';
+      res.setEncoding('utf8').on('data', (d: string) => (body += d));
+      res.on('end', () => {
+        let url: unknown;
+        try {
+          url = (JSON.parse(body) as { url?: unknown }).url;
+        } catch {
+          // refused below
+        }
+        if (res.statusCode !== 200 || typeof url !== 'string' || !url.startsWith(`http://127.0.0.1:${port}/?n=`)) reject(new Error(`no page link (HTTP ${res.statusCode ?? 0})`));
+        else resolve(url);
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * D52: the page's cookie, as a browser gets it: open a one-time link and keep the cookie of the
+ * answer, which holds the page secret the server made at start (never the token).
+ */
+async function pageCookie(port: number, token: string): Promise<string> {
+  const link = new URL(await pageLink(port, token));
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: link.pathname + link.search, method: 'GET' }, (res) => {
+      res.resume();
+      const set = res.headers['set-cookie']?.find((c) => c.startsWith('lurkd_page='))?.split(';')[0];
+      if (res.statusCode !== 200 || set === undefined) reject(new Error(`no page cookie from the page link (HTTP ${res.statusCode ?? 0})`));
+      else resolve(set);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/** The page routes want the page's cookie and its Origin; this is what the lurkd page sends. */
+async function pagePost(port: number, token: string, route: string, body: unknown): Promise<number> {
+  const cookie = await pageCookie(port, token);
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const req = http.request(
@@ -73,7 +114,7 @@ function pagePost(port: number, token: string, route: string, body: unknown): Pr
         path: route,
         method: 'POST',
         headers: {
-          cookie: `lurkd_token=${token}`,
+          cookie,
           origin: `http://127.0.0.1:${port}`,
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(data),
@@ -334,7 +375,7 @@ async function main(): Promise<number> {
 
   try {
     if (!fs.existsSync(path.join(PACKAGE_ROOT, 'dist', 'server', 'main.js'))) throw new Error('dist/server/main.js is missing: run npm run build first');
-    starting = ensureServer(paths, { open: false });
+    starting = ensureServer(paths);
     await starting;
     const info = readRunFile(paths);
     if (info === null) throw new Error('the server did not write its run file');

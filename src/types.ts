@@ -1,4 +1,19 @@
-export type Engine = 'discourse' | 'xenforo' | 'phpbb' | 'vbulletin' | 'generic' | 'custom';
+// `import`: threads the user saved and imported from a file (D50); never read live, never in a source file.
+export type Engine = 'discourse' | 'xenforo' | 'phpbb' | 'vbulletin' | 'generic' | 'custom' | 'import';
+
+/**
+ * D50: the route an imported file came through, which is all lurkd knows of who imported it:
+ * `page` is the upload on the lurkd page, `api` the Bearer route, which `lurkd import reddit` and
+ * any agent holding the token use alike, so the two cannot be told apart.
+ */
+export type ImportVia = 'page' | 'api';
+
+/** D50: how a thread came into the archive from a saved file, kept with the thread. */
+export interface ImportProvenance {
+  via: ImportVia;
+  /** When the import this one replaced was made, or null for the first import of the thread. */
+  replacedImportAt: string | null;
+}
 
 export interface ExtractedPost {
   number: number;

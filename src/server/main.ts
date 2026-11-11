@@ -13,7 +13,7 @@ import { FetchService } from '../fetch/service.js';
 import { readRunFile, removeRunFile, writeRunFile } from '../launcher/runfile.js';
 import { ensureHome, lurkdPaths, PACKAGE_ROOT, VERSION, type LurkdPaths } from '../paths.js';
 import { HostPacer } from '../policy/limiter.js';
-import { DraftStore, SampleStore } from '../sources/drafts.js';
+import { AddRequestStore, DraftStore, ForbiddenLog, SampleStore } from '../sources/drafts.js';
 import { Registry } from '../sources/registry.js';
 import { createApp, retentionDays } from './app.js';
 
@@ -31,6 +31,7 @@ const RETENTION_EVERY_MS = 6 * 3_600_000;
 export interface StartedServer {
   port: number;
   token: string;
+  /** The page's address, without the token (D52): the page opens from a one-time link. */
   url: string;
   close(): Promise<void>;
 }
@@ -60,6 +61,11 @@ export async function startServer(opts: {
   uiDir?: string;
   launch?: LaunchFn;
   onClose?: () => void;
+  /**
+   * Tests only: "Add a forum" may open 127.0.0.1 and localhost, where the fixture forums run.
+   * The process entry point below never passes it, and nothing reads it from the environment.
+   */
+  allowLoopbackForTests?: boolean;
 }): Promise<StartedServer> {
   const { paths } = opts;
   ensureHome(paths);
@@ -71,18 +77,21 @@ export async function startServer(opts: {
   try {
     const salt = getSalt(db);
     const state = new StateStore(db);
-    const registry = Registry.load({ seedDir: opts.seedDir ?? path.join(PACKAGE_ROOT, 'sources'), userDir: paths.userSourcesDir, state });
+    const registry = Registry.load({ seedDir: opts.seedDir ?? path.join(PACKAGE_ROOT, 'sources'), userDir: paths.userSourcesDir, state, builtins: true });
     const threads = new ThreadStore(db, salt);
     const applyRetention = () => threads.applyRetention(retentionDays(db), new Date().toISOString());
     applyRetention();
     const samples = new SampleStore(db);
     const drafts = new DraftStore(db, registry, { state });
+    const addRequests = new AddRequestStore(db);
+    const forbidden = new ForbiddenLog(db);
     const b = new BrowserManager({ profileDir: paths.profileDir, log: (e) => state.logFetch(e), ...(opts.launch ? { launch: opts.launch } : {}) });
     browser = b;
     // Never throws: a failed launch leaves state `error` and the next read tries again.
     await b.start();
     const queue = new FetchQueue();
-    const service = new FetchService({ registry, state, threads, samples, drafts, browser: b, queue, pacer: new HostPacer(), salt });
+    const allowLoopbackForTests = opts.allowLoopbackForTests === true;
+    const service = new FetchService({ registry, state, threads, samples, drafts, browser: b, queue, pacer: new HostPacer(), salt, allowLoopbackForTests });
     const token = crypto.randomBytes(32).toString('hex');
 
     let port = 0;
@@ -120,10 +129,13 @@ export async function startServer(opts: {
       threads,
       drafts,
       samples,
+      addRequests,
+      forbidden,
       browser: b,
       queue,
       uiDir: opts.uiDir ?? path.join(PACKAGE_ROOT, 'ui'),
       shutdown: () => void close(),
+      allowLoopbackForTests,
     });
 
     server = await new Promise<http.Server>((resolve, reject) => {
@@ -145,7 +157,7 @@ export async function startServer(opts: {
     timer.unref();
 
     writeRunFile(paths, { pid: process.pid, port, token, version: VERSION, startedAt: new Date().toISOString() });
-    return { port, token, url: `http://127.0.0.1:${port}/?t=${token}`, close };
+    return { port, token, url: `http://127.0.0.1:${port}/`, close };
   } catch (e) {
     if (timer) clearInterval(timer);
     const srv = server as http.Server | null;

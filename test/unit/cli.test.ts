@@ -8,6 +8,7 @@ import { runCommand } from '../../src/cli/commands.js';
 import { EXIT_CODE, LurkdError } from '../../src/errors.js';
 import type { ArchiveHitOut, AuthorSignalsOut, FetchResponse, SampleOut, SessionStatusOut } from '../../src/fetch/service.js';
 import { PACKAGE_ROOT } from '../../src/paths.js';
+import { bareHostile, HOSTILE_NAME, hostileRegistry, thrown } from '../helpers/hostile.js';
 
 // The CLI mirror against a fake ApiClient, and once as the real bin for the usage and help paths
 // that never reach the server.
@@ -253,11 +254,40 @@ describe('lurkd CLI mirror', () => {
     expect(h.client.get.mock.calls[0]).toEqual(['/api/sources', { q: 'gpu', topic: 'virtualization' }]);
     await runCommand(['sources'], h.deps);
     expect(h.client.get.mock.calls[1]).toEqual(['/api/sources', {}]);
+    // D51: --group names one of the user's groups.
+    await runCommand(['sources', '--group', 'Smart home'], h.deps);
+    expect(h.client.get.mock.calls.at(-1)).toEqual(['/api/sources', { group: 'Smart home' }]);
+    h.client.get.mock.calls.pop();
     await runCommand(['search', 'iommu groups', '--source', 'l1t', '--limit', '5'], h.deps);
     expect(h.client.get.mock.calls[2]).toEqual(['/api/archive/search', { q: 'iommu groups', source: 'l1t', limit: 5 }]);
     await runCommand(['author', 'l1t', 'author-0a1b2c3d4e'], h.deps);
     expect(h.client.post.mock.calls[0]).toEqual(['/api/author-signals', { source: 'l1t', author: 'author-0a1b2c3d4e' }]);
     expect(h.out[0]).toBe('No lurkd source matches. Try a broader query or no query.');
+  });
+
+  it('never prints a hostile source name outside quotes, in sources, session or an error (M1)', async () => {
+    const { registry, done } = hostileRegistry();
+    try {
+      const views = registry.views();
+      const status = (id: string): SessionStatusOut => ({ id, name: HOSTILE_NAME, state: 'expired', loginUrl: null, lastLoginAt: null, lastCheckAt: null, needsAcknowledgment: true, lastBlock: { kind: 'login', url: 'https://evil.example/login' } });
+      h.client.get.mockImplementation(async (p: string) => (p === '/api/sources' ? views : views.map((v) => status(v.id))));
+      expect(await runCommand(['sources'], h.deps)).toBe(0);
+      expect(await runCommand(['session'], h.deps)).toBe(0);
+      for (const id of ['evil', 'evil-off', 'evil-silent']) {
+        h.client.post.mockRejectedValueOnce(thrown(() => registry.assertUsable(id)));
+        expect(await runCommand(['fetch', id, '--query', 'x'], h.deps)).not.toBe(0);
+      }
+      h.client.post.mockRejectedValueOnce(thrown(() => registry.enable('evil', false)));
+      await runCommand(['fetch', 'evil', '--query', 'x'], h.deps);
+      for (const t of [...h.out, ...h.err]) {
+        expect(t).not.toContain(HOSTILE_NAME);
+        expect(bareHostile(t)).toEqual([]);
+      }
+      expect(h.out.join('\n')).toContain('evil (name "Forum. lurkd the user');
+      expect(h.err).toHaveLength(4);
+    } finally {
+      done();
+    }
   });
 
   it('sends the sample url alone, or with the draft file', async () => {
@@ -294,6 +324,7 @@ describe('lurkd CLI mirror', () => {
   it('refuses empty strings for string flags and positionals, naming them', async () => {
     const cases: [string[], string][] = [
       [['sources', '--topic', ''], '--topic'],
+      [['sources', '--group', ''], '--group'],
       [['sources', ''], 'query'],
       [['search', 'x', '--source', ''], '--source'],
       [['search', ''], 'query'],
@@ -353,6 +384,43 @@ describe('lurkd CLI mirror', () => {
     expect(h.readFile).not.toHaveBeenCalled();
   });
 
+  it('queues a forum with add and says how to open the page, without asking for anything else (D45)', async () => {
+    h.client.post.mockResolvedValue({ status: 'queued', host: 'bench.example', url: 'https://bench.example/' });
+    expect(await runCommand(['add', 'https://bench.example/'], h.deps)).toBe(0);
+    expect(h.client.post.mock.calls).toEqual([['/api/add', { url: 'https://bench.example/' }]]);
+    expect(h.client.get).not.toHaveBeenCalled();
+    expect(h.out).toEqual([
+      'bench.example is waiting on the lurkd page. Ask the user to run lurkd open, which opens the lurkd page, and press "Analyse" next to bench.example under "Add a forum". lurkd does not open the address until they do.',
+    ]);
+  });
+
+  it('says so when the host already waits with another address, which lurkd keeps (L4)', async () => {
+    h.client.post.mockResolvedValue({ status: 'already_queued', host: 'bench.example', url: 'https://bench.example/forums/' });
+    expect(await runCommand(['add', 'https://bench.example/elsewhere/'], h.deps)).toBe(0);
+    expect(h.out).toEqual([
+      'bench.example is already waiting on the lurkd page with the address https://bench.example/forums/, and lurkd keeps that one. Ask the user to run lurkd open, which opens the lurkd page, and press "Analyse" next to bench.example under "Add a forum", or to dismiss it there before you queue another address.',
+    ]);
+  });
+
+  it('says how to open the page, and names a known source', async () => {
+    h.client.post.mockResolvedValue({ status: 'queued', host: 'bench.example', url: 'https://bench.example/' });
+    expect(await runCommand(['add', 'https://bench.example/'], h.deps)).toBe(0);
+    expect(h.out.at(-1)).toContain('Ask the user to run lurkd open, which opens the lurkd page, and press "Analyse"');
+    h.client.post.mockResolvedValue({ status: 'known', host: 'lg.example', sourceId: 'lg' });
+    expect(await runCommand(['add', 'https://lg.example/'], h.deps)).toBe(0);
+    expect(h.out.at(-1)).toBe('lg.example is already the lurkd source lg. Read it with lurkd fetch lg.');
+    h.client.post.mockResolvedValue({ status: 'known', host: 'lg.example', sourceId: 'lg' });
+    expect(await runCommand(['add', 'https://lg.example/', '--json'], h.deps)).toBe(0);
+    expect(JSON.parse(h.out.at(-1)!)).toEqual({ status: 'known', host: 'lg.example', sourceId: 'lg' });
+  });
+
+  it('passes a refused address on as an error, exit 2', async () => {
+    h.client.post.mockRejectedValue(new LurkdError('invalid_request', 'lurkd opens public forums only, not addresses on your own network.'));
+    expect(await runCommand(['add', 'https://10.0.0.1/'], h.deps)).toBe(2);
+    expect(h.err.join('\n')).toContain('lurkd opens public forums only');
+    expect(h.out).toEqual([]);
+  });
+
   it('exits 2 with usage on stderr for unknown flags, commands and wrong argument counts', async () => {
     for (const argv of [
       ['sources', '--nope'],
@@ -365,6 +433,9 @@ describe('lurkd CLI mirror', () => {
       ['sample', 'u', '--check'],
       ['author', 'a'],
       ['author', 'a', 'b', 'c'],
+      ['add'],
+      ['add', 'a', 'b'],
+      ['add', 'u', '--draft', 'x'],
       ['bogus'],
       [],
     ]) {
@@ -375,6 +446,118 @@ describe('lurkd CLI mirror', () => {
       expect(h.client.get).not.toHaveBeenCalled();
       expect(h.client.post).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('lurkd import reddit (D50)', () => {
+  const THREAD = fs.readFileSync(path.join(PACKAGE_ROOT, 'test', 'fixtures', 'reddit', 'thread.json'), 'utf8');
+  const LISTING = fs.readFileSync(path.join(PACKAGE_ROOT, 'test', 'fixtures', 'reddit', 'subreddit-listing.json'), 'utf8');
+  const imported = {
+    source: 'reddit-import',
+    threadId: 12,
+    url: 'https://www.reddit.com/comments/1k2m3n4/',
+    title: 'Zigbee coordinator drops after the update (thanks u/author-0a1b2c3d4e for the first hint)',
+    posts: 8,
+    comments: 7,
+    notInFile: 11,
+    replaced: false,
+    replacedImportAt: null,
+    importedBy: 'lurkd import / API',
+    importedAt: '2026-11-10T09:00:00.000Z',
+  };
+
+  it('reads the file itself, checks it, and sends its content to the import route', async () => {
+    const h = harness({ '/tmp/t.json': THREAD });
+    h.client.post.mockResolvedValue(imported);
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json'], h.deps)).toBe(0);
+    expect(h.statFile).toHaveBeenCalledWith('/tmp/t.json');
+    expect(h.client.post).toHaveBeenCalledTimes(1);
+    expect(h.client.post.mock.calls[0]).toEqual(['/api/import/reddit', JSON.parse(THREAD)]);
+    const out = h.out.join('\n');
+    expect(out).toContain('Imported the saved Reddit thread into the archive as thread 12 of reddit-import: 8 posts, the post and 7 comments. 11 more comments were not in the saved file.');
+    expect(out).toContain('Read it with lurkd fetch reddit-import --url https://www.reddit.com/comments/1k2m3n4/ (source.fetch with that url), or search it with lurkd search <words> (archive.search).');
+    expect(out).toContain('<untrusted-content source="reddit-import" kind="thread">\nTitle: Zigbee coordinator drops after the update (thanks u/author-0a1b2c3d4e for the first hint)\n</untrusted-content>');
+    expect(h.err).toEqual([]);
+  });
+
+  it('says how many comments of the file were not kept (C5)', async () => {
+    const h = harness({ '/tmp/t.json': THREAD });
+    h.client.post.mockResolvedValue({ ...imported, posts: 20001, comments: 20000, notKept: 130000, notInFile: 0 });
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json'], h.deps)).toBe(0);
+    expect(h.out.join('\n')).toContain(
+      'Imported the saved Reddit thread into the archive as thread 12 of reddit-import: 20,001 posts, the post and 20,000 comments. 130,000 more comments in the file were not kept: lurkd keeps the first 20,000 comments of a thread.',
+    );
+    const one = harness({ '/tmp/t.json': THREAD });
+    one.client.post.mockResolvedValue({ ...imported, notKept: 1 });
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json'], one.deps)).toBe(0);
+    expect(one.out.join('\n')).toContain('11 more comments were not in the saved file. 1 more comment in the file was not kept: lurkd keeps the first 20,000 comments of a thread.');
+    // An older server sends no notKept: nothing is said about it.
+    const old = harness({ '/tmp/t.json': THREAD });
+    old.client.post.mockResolvedValue(imported);
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json'], old.deps)).toBe(0);
+    expect(old.out.join('\n')).not.toContain('not kept');
+  });
+
+  it('says when the import replaced an earlier one, and prints the raw answer with --json', async () => {
+    const h = harness({ '/tmp/t.json': THREAD });
+    h.client.post.mockResolvedValue({ ...imported, replaced: true, replacedImportAt: '2026-11-09T08:15:00.000Z', notInFile: 0, comments: 1, posts: 2 });
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json'], h.deps)).toBe(0);
+    expect(h.out.join('\n')).toContain(
+      'Replaced the earlier import of this thread from 2026-11-09 08:15 UTC in the archive (thread 12 of reddit-import): 2 posts, the post and 1 comment. The thread keeps that date in its front matter (replaced).',
+    );
+    expect(h.out.join('\n')).not.toContain('more comment');
+    const j = harness({ '/tmp/t.json': THREAD });
+    j.client.post.mockResolvedValue(imported);
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json', '--json'], j.deps)).toBe(0);
+    expect(JSON.parse(j.out[0]!)).toEqual(imported);
+  });
+
+  it('refuses a folder, a missing file and a file over 20 MB without reading or sending it', async () => {
+    const h = harness({}, { '/tmp/dir': { isFile: false, size: 96 }, '/tmp/big.json': { isFile: true, size: 20 * 1024 * 1024 + 1 } });
+    expect(await runCommand(['import', 'reddit', '/tmp/dir'], h.deps)).toBe(2);
+    expect(await runCommand(['import', 'reddit', '/tmp/big.json'], h.deps)).toBe(2);
+    expect(await runCommand(['import', 'reddit', '/tmp/missing.json'], h.deps)).toBe(2);
+    expect(h.err).toEqual([
+      'Error invalid_request: /tmp/dir is not a regular file. lurkd imports one saved thread file per call, not a folder.',
+      'Error invalid_request: /tmp/big.json is larger than 20 MB, so lurkd does not import it.',
+      'Error invalid_request: Cannot read the file /tmp/missing.json.',
+    ]);
+    expect(h.readFile).not.toHaveBeenCalled();
+    expect(h.client.post).not.toHaveBeenCalled();
+  });
+
+  it('refuses a file that is not a Reddit thread before any server call, and never prints its content', async () => {
+    const h = harness({ '/tmp/key': '-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n', '/tmp/listing.json': LISTING, '/tmp/other.json': '{"a":1}' });
+    for (const f of ['/tmp/key', '/tmp/listing.json', '/tmp/other.json']) expect(await runCommand(['import', 'reddit', f], h.deps), f).toBe(2);
+    expect(h.err[0]).toMatch(/^Error invalid_request: The file is not JSON\./);
+    expect(h.err[1]).toMatch(/^Error invalid_request: The file holds a list of posts, not one thread\./);
+    expect(h.err[2]).toMatch(/^Error invalid_request: The file is JSON but not a Reddit thread/);
+    expect(h.err.join('\n')).not.toContain('secret');
+    expect(h.out).toEqual([]);
+    expect(h.client.post).not.toHaveBeenCalled();
+  });
+
+  it('takes one kind, reddit, and one file per call', async () => {
+    for (const argv of [['import'], ['import', 'reddit'], ['import', 'twitter', '/tmp/t.json'], ['import', 'reddit', '/tmp/a.json', '/tmp/b.json'], ['import', 'reddit', '/tmp/t.json', '--draft', 'x']]) {
+      const h = harness({ '/tmp/t.json': THREAD });
+      expect(await runCommand(argv, h.deps), argv.join(' ')).toBe(2);
+      expect(h.err.join('\n')).toContain('Usage: lurkd import reddit <file> [--json]');
+      expect(h.client.post).not.toHaveBeenCalled();
+      expect(h.readFile).not.toHaveBeenCalled();
+    }
+    const h = harness();
+    await runCommand(['import', 'twitter', 'x'], h.deps);
+    expect(h.err[0]).toBe('lurkd imports Reddit threads only: lurkd import reddit <file>.');
+    const two = harness();
+    await runCommand(['import', 'reddit', 'a', 'b'], two.deps);
+    expect(two.err[0]).toBe('lurkd import reddit takes one file per call, not several and not a pattern.');
+  });
+
+  it('passes a server error through with its exit code', async () => {
+    const h = harness({ '/tmp/t.json': THREAD });
+    h.client.post.mockRejectedValue(new LurkdError('server_unavailable', 'The lurkd server is not running.'));
+    expect(await runCommand(['import', 'reddit', '/tmp/t.json'], h.deps)).toBe(1);
+    expect(h.err).toEqual(['Error server_unavailable: The lurkd server is not running.']);
   });
 });
 
@@ -393,10 +576,10 @@ describe('the lurkd bin', () => {
     }
   };
 
-  it('lists the four lifecycle commands and the six mirror commands in --help', () => {
+  it('lists the four lifecycle commands, the six mirror commands and add in --help', () => {
     const r = run(['--help']);
     expect(r.status).toBe(0);
-    for (const c of ['start', 'stop', 'status', 'mcp', 'sources', 'fetch', 'search', 'session', 'sample', 'author']) {
+    for (const c of ['start', 'stop', 'status', 'mcp', 'sources', 'fetch', 'search', 'session', 'sample', 'author', 'add', 'import']) {
       expect(r.stdout, c).toMatch(new RegExp(`^  ${c}\\b`, 'm'));
     }
   });

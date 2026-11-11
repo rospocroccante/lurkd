@@ -2,6 +2,7 @@ import { errors, type Page, type Request, type Response } from 'playwright';
 import type { FetchKind, FetchLogEntry } from '../archive/state.js';
 import { detectBlock, type Detection } from '../detect.js';
 import { LurkdError } from '../errors.js';
+import { quotedName } from '../output/quoted.js';
 import { PAGE_TIMEOUT_MS, type RunLimiter } from '../policy/limiter.js';
 import { checkNavigable, isAllowedHost, matchesReadEndpoint, redactForumAddress, redactOrigin, redactUrl } from '../policy/urls.js';
 import type { SourceConfig } from '../sources/schema.js';
@@ -586,7 +587,7 @@ export class PageReader {
         rule: null,
       });
     }
-    return new LurkdError('server_unavailable', `${this.source.name} could not be reached at ${this.shown(url)} (${netLabel(code)}).`, {
+    return new LurkdError('server_unavailable', `${quotedName(this.source.name)} could not be reached at ${this.shown(url)} (${netLabel(code)}).`, {
       url,
       sourceId: this.source.id,
       error: `net::${code}`,
@@ -601,13 +602,13 @@ export class PageReader {
     if (detection.kind === 'login') {
       return new LurkdError(
         'needs_login',
-        `${this.source.name} asks for a login at ${this.shown(finalUrl)} (${why}). Log in from the lurkd page, then try again.`,
+        `${quotedName(this.source.name)} asks for a login at ${this.shown(finalUrl)} (${why}). Log in from the lurkd page, then try again.`,
         details,
       );
     }
     return new LurkdError(
       'challenge',
-      `${this.source.name} shows a human check at ${this.shown(finalUrl)} (${why}). lurkd does not try to get past it; solve it from the lurkd page, then try again.`,
+      `${quotedName(this.source.name)} shows a human check at ${this.shown(finalUrl)} (${why}). lurkd does not try to get past it; solve it from the lurkd page, then try again.`,
       details,
     );
   }

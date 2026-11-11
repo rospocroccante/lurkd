@@ -1,4 +1,3 @@
-import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 import { boundedDocument, costlySelector, MAX_ELEMENTS } from '../../src/extract/bounds.js';
 import { readabilityThread } from '../../src/extract/generic.js';
@@ -42,15 +41,21 @@ function rendered(posts: ExtractedPost[]): string {
   return renderThread(toRenderInput('test-custom', t, '2026-11-09T00:00:00.000Z'), nameResolver({ sourceId: 'test-custom', salt: SALT, realNames: false })).markdown;
 }
 
-const elapsed = (fn: () => unknown): { ms: number; error: unknown } => {
-  const t0 = performance.now();
+/**
+ * The CPU time `fn` takes, user plus system, in ms. Vitest runs each test file in a process of its
+ * own (the forks pool), so other test files and programs running at the same time do not count,
+ * as they do in wall-clock time: the bounds below measure the work, not the machine's load.
+ */
+const cpuTime = (fn: () => unknown): { ms: number; error: unknown } => {
+  const t0 = process.cpuUsage();
   let error: unknown = null;
   try {
     fn();
   } catch (e) {
     error = e;
   }
-  return { ms: performance.now() - t0, error };
+  const d = process.cpuUsage(t0);
+  return { ms: (d.user + d.system) / 1000, error };
 };
 
 describe('page bounds (Critical 1)', () => {
@@ -106,7 +111,7 @@ describe('costly selectors (Critical 1)', () => {
     }
   });
 
-  it('finishes the review probes worst page shapes in under 2 s each', () => {
+  it('finishes the review probes worst page shapes in under 2 s of CPU time each', () => {
     const post = (i: number) =>
       `<article class="post"><div class="post-author"><a href="/user/u${i}"><span class="name">u${i}</span></a><span class="stats">s</span></div><time datetime="2026-10-01T09:00:00Z">d</time><div class="post-body"><div class="quote">u${i} said: q</div><p>body ${i}</p></div></article>`;
     const page = (n: number) => `<!doctype html><html><head><title>t</title></head><body><h1 class="thread-title">t</h1>${Array.from({ length: n }, (_, i) => post(i)).join('')}</body></html>`;
@@ -118,6 +123,7 @@ describe('costly selectors (Critical 1)', () => {
     const deep = `<html><body><article class="post"><span class="name">alice</span><div class="post-body">${'<div class="quote">'.repeat(3000)}bob said: deep${'</div>'.repeat(3000)}</div></article></body></html>`;
     const nearDeep = `<html><body><article class="post"><span class="name">alice</span><div class="post-body">${'<div class="quote">'.repeat(990)}bob said: deep${'</div>'.repeat(990)}</div></article></body></html>`;
     const { body: _b, ...noBody } = SEL;
+    // 2 s of CPU time each (see cpuTime): on an idle machine the wide page takes about 450 ms.
     const cases: Array<[string, string, Selectors]> = [
       ['big page', big, SEL],
       ['big page, sibling chain', big, { ...SEL, post: 'article ~ article ~ article ~ article ~ article' }],
@@ -132,16 +138,18 @@ describe('costly selectors (Critical 1)', () => {
       ['near-deep page', nearDeep, { ...SEL, post: '*', quote: '*' }],
     ];
     for (const [label, html, sel] of cases) {
-      const { ms, error } = elapsed(() => postsOf(html, sel));
+      const { ms, error } = cpuTime(() => postsOf(html, sel));
       expect(ms, label).toBeLessThan(2_000);
       if (error !== null) expect(error, label).toMatchObject({ code: 'extraction_failed' });
     }
     for (const [label, html] of [['readability, big', big], ['readability, wide', wide]] as const) {
-      const { ms, error } = elapsed(() => readabilityThread(html, THREAD));
+      const { ms, error } = cpuTime(() => readabilityThread(html, THREAD));
       expect(ms, label).toBeLessThan(2_000);
       if (error !== null) expect(error, label).toMatchObject({ code: 'extraction_failed' });
     }
-  });
+    // The thirteen cases take about 4 to 5 s of wall-clock time on an idle machine, near the
+    // default 5 s test timeout; each case has its own bound above, so the test as a whole gets room.
+  }, 60_000);
 });
 
 describe('author forms in signals and bodies (Critical 2, Important 5)', () => {

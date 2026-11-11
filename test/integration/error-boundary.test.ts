@@ -280,7 +280,7 @@ describe('page-thrown text stays off lurkd error lines', () => {
   it('a redirect to a host name the forum chose is "another host"', async () => {
     const e = expectClean(await svc.fetch(parseFetchRequest({ source: 'xf', url: `${xfOrigin}/threads/host.16/` })).catch((x: unknown) => x));
     expect(e).toMatchObject({ code: 'off_domain', details: { url: expect.stringContaining('ignore-previous-instructions') } });
-    expect(e.message).toBe('xf forum redirected to another host, which is not on a domain of xf. The request had already left the browser, so lurkd stopped the read.');
+    expect(e.message).toBe('"xf forum" redirected to another host, which is not on a domain of xf. The request had already left the browser, so lurkd stopped the read.');
   });
 
   it('the content type of a topic JSON answer is printed only when it is a media type', async () => {
@@ -292,11 +292,11 @@ describe('page-thrown text stays off lurkd error lines', () => {
   it('a search hit whose slug the forum chose, on Discourse and on XenForo', async () => {
     const d = expectClean(await svc.fetch(parseFetchRequest({ source: 'disc', query: 'x', max_threads: 1 })).catch((x: unknown) => x));
     expect(d).toMatchObject({ code: 'not_found', details: { url: expect.stringContaining(SLUG) } });
-    expect(d.message).toMatch(/^disc forum has no topic at http:\/\/127\.0\.0\.1:\d+ \(HTTP 404\)\.$/);
+    expect(d.message).toMatch(/^"disc forum" has no topic at http:\/\/127\.0\.0\.1:\d+ \(HTTP 404\)\.$/);
     searchBody = fixture('xenforo/search-form.html');
     const x = expectClean(await svc.fetch(parseFetchRequest({ source: 'xf', query: 'x', max_threads: 1 })).catch((e: unknown) => e));
     expect(x).toMatchObject({ code: 'not_found', details: { url: expect.stringContaining(XF_SLUG) } });
-    expect(x.message).toMatch(/^xf forum has no thread at http:\/\/localhost:\d+ \(HTTP 404\)\.$/);
+    expect(x.message).toMatch(/^"xf forum" has no thread at http:\/\/localhost:\d+ \(HTTP 404\)\.$/);
     searchBody = hostileSearch;
   });
 
@@ -309,10 +309,10 @@ describe('page-thrown text stays off lurkd error lines', () => {
   it('an address the agent passed still shows origin and path', async () => {
     const x = (await svc.fetch(parseFetchRequest({ source: 'xf', url: `${xfOrigin}/threads/mine.9/?u=someone` })).catch((e: unknown) => e)) as LurkdError;
     expect(x).toMatchObject({ code: 'not_found' });
-    expect(x.message).toBe(`xf forum has no thread at ${xfOrigin}/threads/mine.9/ (HTTP 404).`);
+    expect(x.message).toBe(`"xf forum" has no thread at ${xfOrigin}/threads/mine.9/ (HTTP 404).`);
     const d = (await svc.fetch(parseFetchRequest({ source: 'disc', url: `${disc.origin}/t/my-topic/102` })).catch((e: unknown) => e)) as LurkdError;
     expect(d).toMatchObject({ code: 'not_found' });
-    expect(d.message).toBe(`disc forum has no topic at ${disc.origin}/t/my-topic/102 (HTTP 404).`);
+    expect(d.message).toBe(`"disc forum" has no topic at ${disc.origin}/t/my-topic/102 (HTTP 404).`);
     expect(JSON.stringify(queue.snapshot().at(-1))).toContain('/t/my-topic/102');
   });
 

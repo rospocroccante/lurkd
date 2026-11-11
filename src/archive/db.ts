@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import { LurkdError } from '../errors.js';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 6;
 
 // Schema version 1. `signals` and `notes` hold JSON arrays; `posts.page` stays null on Discourse (D32);
 // `fetch_log.note` holds `beacon:<name>` for blocked beacons and `login` or `challenge` for detections.
@@ -32,6 +32,45 @@ CREATE INDEX fetch_log_source_at ON fetch_log (source_id, at);
 CREATE TABLE drafts (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL, host TEXT NOT NULL, yaml TEXT NOT NULL,
   warnings TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('pending','approved','rejected')), created_at TEXT NOT NULL);
 CREATE TABLE samples (host TEXT PRIMARY KEY, url TEXT NOT NULL, structure TEXT, requested_at TEXT NOT NULL, sampled_at TEXT);
+`;
+
+// Schema version 2 (D45): addresses `lurkd add` queued for the lurkd page's "Add a forum", one per host.
+const SCHEMA_V2 = `
+CREATE TABLE add_requests (host TEXT PRIMARY KEY, url TEXT NOT NULL, requested_at TEXT NOT NULL);
+`;
+
+// Schema version 3 (D49): forums whose rules forbid automated access, one per host, as "Analyse"
+// found them. The engine and URLs are kept so "Add anyway" can draft the source from the entry.
+const SCHEMA_V3 = `
+CREATE TABLE forbidden_log (host TEXT PRIMARY KEY, name TEXT NOT NULL,
+  engine TEXT CHECK (engine IN ('discourse','xenforo')), base_url TEXT NOT NULL,
+  login_url TEXT, signup_url TEXT, search_url TEXT,
+  rule_url TEXT NOT NULL, sentence TEXT NOT NULL, found_at TEXT NOT NULL);
+`;
+
+// Schema version 4 (D50): for a thread imported from a saved file, the route it came through and
+// when the import it replaced was made. Both null for threads read live.
+const SCHEMA_V4 = `
+ALTER TABLE threads ADD COLUMN imported_via TEXT CHECK (imported_via IN ('page','api'));
+ALTER TABLE threads ADD COLUMN replaced_import_at TEXT;
+`;
+
+// Schema version 5 (D51): the user's own groups of sources, made and changed on the lurkd page only.
+// Members are source ids, not a foreign key: sources live in files, and a file that fails to load
+// for a while keeps its place in its groups. `IF NOT EXISTS` lets the step finish a file that
+// already holds the tables.
+const SCHEMA_V5 = `
+CREATE TABLE IF NOT EXISTS custom_groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS custom_group_members (group_id INTEGER NOT NULL REFERENCES custom_groups(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (group_id, source_id));
+CREATE INDEX IF NOT EXISTS custom_group_members_source ON custom_group_members (source_id);
+`;
+
+// Schema version 6 (A8 L7): the page asks for the latest thread of every source on each poll
+// (ThreadStore.lastFetchedBySource); this index answers it without reading the table or sorting.
+// `IF NOT EXISTS` lets the step finish a file that holds the index already.
+const SCHEMA_V6 = `
+CREATE INDEX IF NOT EXISTS threads_source_fetched ON threads (source_id, fetched_at);
 `;
 
 function isOnDisk(file: string): boolean {
@@ -63,10 +102,15 @@ function migrate(db: Database.Database): void {
   db.transaction(() => {
     const version = db.pragma('user_version', { simple: true }) as number;
     if (version === SCHEMA_VERSION) return;
-    if (version !== 0) {
+    if (version > SCHEMA_VERSION || version < 0) {
       throw new LurkdError('internal', `archive schema version ${version} is newer than this lurkd supports (${SCHEMA_VERSION})`);
     }
-    db.exec(SCHEMA_V1);
+    if (version < 1) db.exec(SCHEMA_V1);
+    if (version < 2) db.exec(SCHEMA_V2);
+    if (version < 3) db.exec(SCHEMA_V3);
+    if (version < 4) db.exec(SCHEMA_V4);
+    if (version < 5) db.exec(SCHEMA_V5);
+    if (version < 6) db.exec(SCHEMA_V6);
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

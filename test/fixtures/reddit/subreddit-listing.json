@@ -1,0 +1,27 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": "t3_1k2m3n4",
+    "dist": 1,
+    "modhash": "",
+    "geo_filter": null,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "subreddit": "homeassistant",
+          "selftext": "A post in a listing, not a thread.",
+          "title": "Weekly thread",
+          "name": "t3_1k2m3n4",
+          "score": 3,
+          "id": "1k2m3n4",
+          "author": "erin",
+          "num_comments": 4,
+          "permalink": "/r/homeassistant/comments/1k2m3n4/weekly_thread/",
+          "created_utc": 1793000000.0
+        }
+      }
+    ],
+    "before": null
+  }
+}

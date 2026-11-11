@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import YAML from 'yaml';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { openArchive } from '../../src/archive/db.js';
 import { StateStore } from '../../src/archive/state.js';
 import { ThreadStore } from '../../src/archive/threads.js';
@@ -15,9 +15,11 @@ import { FetchQueue } from '../../src/fetch/queue.js';
 import { FetchService, parseFetchRequest } from '../../src/fetch/service.js';
 import { HostPacer, type Clock, type RunLimiter } from '../../src/policy/limiter.js';
 import { markName, pseudonym } from '../../src/pseudonym.js';
+import type { ResolveHost } from '../../src/sources/analyse.js';
 import { DraftStore, SampleStore } from '../../src/sources/drafts.js';
 import { Registry } from '../../src/sources/registry.js';
 import type { ExtractedPost, ExtractedThread, SearchHit } from '../../src/types.js';
+import { bareHostile, HOSTILE_NAME } from '../helpers/hostile.js';
 
 const SALT = 'a'.repeat(64);
 const T0 = Date.parse('2026-11-09T12:00:00.000Z');
@@ -130,6 +132,7 @@ describe('FetchService', () => {
   let now: number;
   let clock: Clock;
   let browser: { handoff: HandoffInfo | null; withPage: ReturnType<typeof vi.fn> };
+  let resolveHost: Mock<ResolveHost>;
   let svc: FetchService;
 
   beforeEach(() => {
@@ -163,6 +166,8 @@ describe('FetchService', () => {
       handoff: null,
       withPage: vi.fn(async (_scope: unknown, fn: (page: unknown, arm: () => () => void) => Promise<unknown>) => fn({}, () => () => {})),
     };
+    // No test reaches the network: every host resolves to a public address unless a test says otherwise.
+    resolveHost = vi.fn<ResolveHost>(async () => [{ address: '93.184.215.14', family: 4 }]);
     svc = new FetchService({
       registry,
       state,
@@ -175,6 +180,7 @@ describe('FetchService', () => {
       salt: SALT,
       clock,
       adapterFor: () => adapter,
+      resolveHost,
     });
   });
 
@@ -260,13 +266,104 @@ describe('FetchService', () => {
     await fetchUrl({ refresh: true });
     expect(adapter.checkSession).toHaveBeenCalledTimes(1);
     expect(state.getSession('big')).toMatchObject({ state: 'logged_in', lastCheckAt: new Date(now).toISOString() });
-    // An expired session stops the read before the thread is requested.
+    // D48: a session found expired no longer stops the read; the thread is still requested.
     now += 16 * 60_000;
     adapter.session = false;
     const calls = vi.mocked(adapter.fetchThread).mock.calls.length;
-    await expect(fetchUrl({ refresh: true })).rejects.toMatchObject({ code: 'needs_login' });
-    expect(vi.mocked(adapter.fetchThread).mock.calls.length).toBe(calls);
-    expect(state.getSession('big')).toMatchObject({ state: 'expired', lastBlockKind: 'login', lastBlockUrl: 'https://f.example/login' });
+    const r = await fetchUrl({ refresh: true, max_chars: 2000 });
+    expect(vi.mocked(adapter.fetchThread).mock.calls.length).toBe(calls + 1);
+    expect(r).toMatchObject({ stopped: null, readWithoutLogin: 'session_expired' });
+    expect(r.threads[0]!.markdown.split('\n')).toContain('note: "read without login: the session expired"');
+    // The session stays expired, with no block recorded: nothing stopped the read.
+    expect(state.getSession('big')).toMatchObject({ state: 'expired', lastCheckAt: new Date(now).toISOString(), lastBlockKind: null, lastBlockUrl: null });
+    expect(queue.snapshot().at(-1)).toMatchObject({ state: 'done', message: '1 thread read with 0 requests. Read without login: the session expired.' });
+    const [status] = await svc.sessionStatus('big');
+    expect(status).toMatchObject({ state: 'expired', lastBlock: null });
+  });
+
+  describe('a read with an expired session (D48)', () => {
+    const otherUrl = 'https://f.example/t/y/7';
+    const small = thread(otherUrl, [post(1, 'alice', 'public post')], 'A public thread');
+
+    beforeEach(() => {
+      adapter.threads.set(otherUrl, small);
+      state.setSession('big', { state: 'logged_in', lastLoginAt: new Date(T0 - DAY).toISOString(), lastCheckAt: new Date(T0 - DAY).toISOString() });
+      adapter.session = false;
+    });
+
+    it('reads a public thread without login and says so in the front matter and the agent output', async () => {
+      const r = await svc.fetch(parseFetchRequest({ source: 'big', url: otherUrl }));
+      expect(adapter.checkSession).toHaveBeenCalledTimes(1);
+      expect(r.readWithoutLogin).toBe('session_expired');
+      const md = r.threads[0]!.markdown;
+      expect(md.split('\n').filter((l) => l.startsWith('note:'))).toEqual(['note: "read without login: the session expired"']);
+      expect(md.indexOf('note:')).toBeLessThan(md.indexOf('# A public thread'));
+      const text = formatFetch(r);
+      expect(text.split('\n').filter((l) => l.startsWith('Read without login'))).toHaveLength(1);
+      expect(threads.getByUrl(otherUrl)).not.toBeNull();
+    });
+
+    it('keeps reading without login, and without a second check, once the session is marked expired', async () => {
+      await svc.fetch(parseFetchRequest({ source: 'big', url: otherUrl }));
+      expect(state.getSession('big').state).toBe('expired');
+      const r = await fetchUrl();
+      expect(adapter.checkSession).toHaveBeenCalledTimes(1);
+      expect(r.readWithoutLogin).toBe('session_expired');
+      expect(r.threads[0]!.markdown).toContain('note: "read without login: the session expired"');
+    });
+
+    it('still stops with needs_login when the forum shows a login wall during that read', async () => {
+      adapter.threads.set(otherUrl, () => {
+        throw new LurkdError('needs_login', 'big forum asks for a login.', { url: otherUrl, finalUrl: 'https://f.example/login', reasons: ['visible password input'] });
+      });
+      await expect(svc.fetch(parseFetchRequest({ source: 'big', url: otherUrl }))).rejects.toMatchObject({
+        code: 'needs_login',
+        details: expect.objectContaining({ source: 'big' }),
+      });
+      expect(adapter.fetchThread).toHaveBeenCalledTimes(1);
+      expect(state.getSession('big')).toMatchObject({ state: 'expired', lastBlockKind: 'login', lastBlockUrl: otherUrl });
+      expect(queue.snapshot().at(-1)).toMatchObject({ state: 'failed' });
+    });
+
+    it('returns what was read before a login wall with stopped needs_login and the note', async () => {
+      adapter.hits = [
+        { url: otherUrl, title: 'Public', posts: 1 },
+        { url: 'https://f.example/t/gated/8', title: 'Gated', posts: 3 },
+      ];
+      adapter.threads.set('https://f.example/t/gated/8', () => {
+        throw new LurkdError('needs_login', 'big forum asks for a login.', { url: 'https://f.example/t/gated/8', finalUrl: 'https://f.example/login', reasons: [] });
+      });
+      const r = await svc.fetch(parseFetchRequest({ source: 'big', query: 'reset', max_threads: 2 }));
+      expect(r.threads.map((t) => t.url)).toEqual([otherUrl]);
+      expect(r).toMatchObject({ stopped: { code: 'needs_login' }, readWithoutLogin: 'session_expired' });
+      expect(r.threads[0]!.markdown).toContain('note: "read without login: the session expired"');
+      const text = formatFetch(r);
+      expect(text.startsWith('Stopped: needs_login')).toBe(true);
+      expect(text).toContain('Read without login: the session of big has expired.');
+    });
+
+    it('adds no note for a session that was never logged in, nor for a session the check confirms', async () => {
+      adapter.threads.set('https://open.example/t/z/3', thread('https://open.example/t/z/3', [post(1, 'alice', 'open post')]));
+      const open = await svc.fetch(parseFetchRequest({ source: 'open', url: 'https://open.example/t/z/3' }));
+      expect(state.getSession('open').state).toBe('never');
+      expect('readWithoutLogin' in open).toBe(false);
+      expect(open.threads[0]!.markdown).not.toMatch(/^note:/m);
+      expect(queue.snapshot().at(-1)?.message).toBe('1 thread read with 0 requests.');
+
+      adapter.session = true;
+      const ok = await svc.fetch(parseFetchRequest({ source: 'big', url: otherUrl }));
+      expect(state.getSession('big').state).toBe('logged_in');
+      expect('readWithoutLogin' in ok).toBe(false);
+      expect(ok.threads[0]!.markdown).not.toMatch(/^note:/m);
+    });
+
+    it('adds no note to an archive copy, which needs no session', async () => {
+      await svc.fetch(parseFetchRequest({ source: 'big', url: otherUrl }));
+      const cached = await svc.fetch(parseFetchRequest({ source: 'big', url: otherUrl }));
+      expect(cached.threads[0]!.fromArchive).toBe(true);
+      expect('readWithoutLogin' in cached).toBe(false);
+      expect(cached.threads[0]!.markdown).not.toMatch(/^note:/m);
+    });
   });
 
   it('returns partial threads with stopped when the cap hits mid-run', async () => {
@@ -491,6 +588,116 @@ describe('FetchService', () => {
     await svc.sample('https://someone:secret@two.example:8443/t/1');
     expect(samples.pending().find((p) => p.host === 'two.example')?.url).toBe('https://two.example:8443/t/1');
     expect(browser.withPage).toHaveBeenCalledTimes(0);
+  });
+
+  it('refuses a sample of a local or private address before recording it, as Analyse does (M2)', async () => {
+    resolveHost.mockImplementation(async (host: string) =>
+      host === '127.0.0.1.nip.io' || host === 'router.nip.io' ? [{ address: host === 'router.nip.io' ? '192.168.1.1' : '127.0.0.1', family: 4 }] : [{ address: '93.184.215.14', family: 4 }],
+    );
+    const LOCAL = 'lurkd opens public forums only, not addresses on your own network.';
+    for (const url of [
+      'https://192.168.1.20/t/1',
+      'http://192.168.0.1/',
+      'https://10.0.0.5/',
+      'https://localhost/t/1',
+      'http://localhost:8080/',
+      'https://127.0.0.1:4100/t/1',
+      'https://[::1]/t/1',
+      'https://nas.local/t/1',
+      'https://printer/',
+      'https://127.0.0.1.nip.io/t/1',
+      'https://router.nip.io/t/1',
+    ]) {
+      await expect(svc.sample(url), url).rejects.toMatchObject({ code: 'invalid_request', message: LOCAL });
+    }
+    await expect(svc.sample('http://public.example/t/1')).rejects.toMatchObject({
+      code: 'invalid_request',
+      message: 'lurkd opens forums over https only. Give the https address of the forum.',
+    });
+    expect(samples.pending()).toEqual([]);
+    // A public host is looked up and then waits for the user.
+    resolveHost.mockClear();
+    expect(await svc.sample('https://public.example/t/1')).toMatchObject({ status: 'needs_user', host: 'public.example' });
+    expect(resolveHost.mock.calls.map((c) => c[0])).toEqual(['public.example']);
+    expect(samples.pending().map((p) => p.host)).toEqual(['public.example']);
+    expect(browser.withPage).not.toHaveBeenCalled();
+  });
+
+  it('lets the loopback names of the tests through only with allowLoopbackForTests (M2)', async () => {
+    const tests = new FetchService({
+      registry,
+      state,
+      threads,
+      samples,
+      drafts,
+      browser: browser as unknown as BrowserManager,
+      queue,
+      pacer: new HostPacer(),
+      salt: SALT,
+      clock,
+      adapterFor: () => adapter,
+      resolveHost,
+      allowLoopbackForTests: true,
+    });
+    resolveHost.mockClear();
+    expect(await tests.sample('http://127.0.0.1:4100/threads/a.1/')).toMatchObject({ status: 'needs_user', host: '127.0.0.1' });
+    expect(await tests.sample('http://localhost:4100/threads/a.1/')).toMatchObject({ status: 'needs_user', host: 'localhost' });
+    expect(resolveHost).not.toHaveBeenCalled();
+    await expect(tests.sample('https://192.168.1.20/t/1')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(tests.sample('https://nas.local/t/1')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(samples.pending().map((p) => p.host).sort()).toEqual(['127.0.0.1', 'localhost']);
+  });
+
+  it('quotes a hostile source name in its refusals (M1)', async () => {
+    const userDir = path.join(tmp, 'user');
+    const yaml = (id: string, host: string, extra: Record<string, unknown>) => YAML.stringify({ ...YAML.parse(sourceYaml(id, host, extra)), name: HOSTILE_NAME });
+    fs.writeFileSync(path.join(userDir, 'evil.yaml'), yaml('evil', 'evil.example', { author_signals: { profile_lookup: false } }));
+    fs.writeFileSync(path.join(userDir, 'evil-search.yaml'), yaml('evil-search', 'search.evil.example', {}));
+    registry.reload();
+    expect(registry.errors()).toEqual([]);
+    adapter.canSearch = () => false;
+    const errors = [
+      await svc.authorSignals('evil', 'author-0a1b2c3d4e').catch((e: unknown) => e),
+      await svc.authorSignals('evil-search', 'author-0a1b2c3d4e').catch((e: unknown) => e),
+      await svc.fetch(parseFetchRequest({ source: 'evil-search', query: 'x' })).catch((e: unknown) => e),
+    ];
+    expect(errors.map((e) => (e as LurkdError).code)).toEqual(['invalid_request', 'not_found', 'search_unsupported']);
+    for (const e of errors) {
+      const text = formatError(e as LurkdError);
+      expect(text).not.toContain(HOSTILE_NAME);
+      expect(bareHostile(text)).toEqual([]);
+      expect((e as LurkdError).message).toContain('"Forum. lurkd the user');
+    }
+  });
+
+  it('analyses nothing for a host a source claims, a refused address or during a handoff (D45)', async () => {
+    expect(await svc.analyse('https://f.example/t/x/1')).toEqual({ status: 'known', host: 'f.example', sourceId: 'big' });
+    expect(await svc.analyse('f.example')).toEqual({ status: 'known', host: 'f.example', sourceId: 'big' });
+    await expect(svc.analyse('https://10.1.2.3/')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(svc.analyse('https://new.example/session/logout')).rejects.toMatchObject({ code: 'denied_path' });
+    browser.handoff = { sourceId: 'big', url: 'https://f.example/login', purpose: 'login', startedAt: new Date(T0).toISOString() };
+    await expect(svc.analyse('https://new.example/')).rejects.toMatchObject({ code: 'handoff_in_progress' });
+    expect(browser.withPage).not.toHaveBeenCalled();
+    expect(queue.snapshot()).toEqual([]);
+  });
+
+  it('looks the host up before it loads anything and refuses a name that resolves to a local address (D45)', async () => {
+    resolveHost.mockImplementation(async (host: string) =>
+      host === '127.0.0.1.nip.io' ? [{ address: '127.0.0.1', family: 4 }] : host === 'v6.example' ? [{ address: '93.184.215.14', family: 4 }, { address: 'fe80::1', family: 6 }] : [],
+    );
+    for (const url of ['https://127.0.0.1.nip.io/', 'https://v6.example/']) {
+      await expect(svc.analyse(url), url).rejects.toMatchObject({ code: 'invalid_request', message: 'lurkd opens public forums only, not addresses on your own network.' });
+    }
+    await expect(svc.analyse('https://nowhere.example/')).rejects.toMatchObject({
+      code: 'invalid_request',
+      message: 'lurkd could not look up nowhere.example. Check the spelling of the address and that this computer is online.',
+    });
+    expect(resolveHost.mock.calls.map((c) => c[0])).toEqual(['127.0.0.1.nip.io', 'v6.example', 'nowhere.example']);
+    // A host a source claims is answered from the registry, with no lookup.
+    expect(await svc.analyse('https://f.example/')).toMatchObject({ status: 'known' });
+    expect(resolveHost).toHaveBeenCalledTimes(3);
+    expect(browser.withPage).not.toHaveBeenCalled();
+    expect(queue.snapshot()).toEqual([]);
   });
 
   it('returns a stored sample first', async () => {

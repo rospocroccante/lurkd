@@ -3,11 +3,13 @@ import type { HandoffInfo } from '../browser/manager.js';
 import { LurkdError, type ErrorCode } from '../errors.js';
 import { formatStructure, reduceStructure, SAMPLE_LIMITS, type StructNode } from '../extract/sample.js';
 import type { SampleOut, SessionStatusOut } from '../fetch/service.js';
+import { quotedName } from '../output/quoted.js';
 import { isAllowedHost } from '../policy/urls.js';
+import { analysableUrl } from '../sources/analyse.js';
 import type { AppDeps } from './app.js';
 
-// The UI's side of the browser handoff (D29): the person presses "Log in", "Open window" or
-// "Use this page" on the lurkd page, and these helpers drive BrowserManager. The window they open
+// The UI's side of the browser handoff (D29): the person presses "Log in", "Sign up", "Open window"
+// or "Use this page" on the lurkd page, and these helpers drive BrowserManager. The window they open
 // is the person's to use; nothing here reads from it except `captureSample`, and only the
 // formatStructure outline of the page leaves it.
 
@@ -47,8 +49,21 @@ export async function startLoginHandoff(deps: AppDeps, sourceId: string): Promis
   } else if (source.login_url !== null) {
     info = { sourceId: source.id, url: source.login_url, purpose: 'login' };
   } else {
-    throw invalid(`${source.name} has no login page, so there is nothing to log in to.`, { sourceId: source.id });
+    throw invalid(`${quotedName(source.name)} has no login page, so there is nothing to log in to.`, { sourceId: source.id });
   }
+  await deps.browser.beginHandoff(info);
+  return currentHandoff(deps, info);
+}
+
+/**
+ * Opens the window at `signup_url` (purpose `signup`, D47): the person registers there by hand,
+ * CAPTCHA and email included, and "Done" runs the same session check as after a login.
+ * `invalid_request` when the source has no sign-up page.
+ */
+export async function startSignupHandoff(deps: AppDeps, sourceId: string): Promise<HandoffInfo> {
+  const source = deps.registry.get(sourceId);
+  if (source.signup_url === null) throw invalid(`${quotedName(source.name)} has no sign-up page, so there is nothing to open.`, { sourceId: source.id });
+  const info: Omit<HandoffInfo, 'startedAt'> = { sourceId: source.id, url: source.signup_url, purpose: 'signup' };
   await deps.browser.beginHandoff(info);
   return currentHandoff(deps, info);
 }
@@ -60,6 +75,9 @@ export async function startSampleHandoff(deps: AppDeps, host: string): Promise<H
   if (!HOST.test(key)) throw invalid('host must be a hostname from "Sites waiting for a sample".');
   const pending = deps.samples.get(key);
   if (!pending || pending.structure !== null) throw new LurkdError('not_found', `No page of ${key} is waiting for a sample.`, { host: key });
+  // M2: source.sample checks the address before it records it; a request recorded before that
+  // check (lurkd 0.1.0) meets the same address rules here, before the window opens.
+  analysableUrl(pending.url, { allowLoopback: deps.allowLoopbackForTests === true });
   const info: Omit<HandoffInfo, 'startedAt'> = { sourceId: deps.registry.sourceForHost(key)?.id ?? null, url: pending.url, purpose: 'sample' };
   await deps.browser.beginHandoff(info);
   return currentHandoff(deps, info);
@@ -132,8 +150,8 @@ function codeOf(e: unknown): ErrorCode {
 }
 
 /**
- * Ends the handoff ("Done" with `check`, "Cancel" without). After a login handoff with `check`,
- * one live session check runs; when it finds the source logged in, `lastLoginAt` is set to now.
+ * Ends the handoff ("Done" with `check`, "Cancel" without). After a login or sign-up handoff with
+ * `check`, one live session check runs; when it finds the source logged in, `lastLoginAt` is set to now.
  * A failed check leaves the status as stored, with `checkError`. "Done" after a challenge clears
  * the challenge mark, since the person says it is solved; the next read records it again if not.
  * Returns the source's status, or null when no handoff was open, for a sample window, or on cancel.

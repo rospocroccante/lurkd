@@ -1,0 +1,295 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "after": null,
+      "dist": 1,
+      "modhash": "",
+      "geo_filter": "",
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "approved_at_utc": null,
+            "subreddit": "homeassistant",
+            "selftext": "After the 2026.10 update my coordinator drops every few hours.\n\nu/erin suggested a USB extension cable, and /u/dave pinned a log guide. AT&T fibre router, if it matters: 2.4 GHz channel 11 & Zigbee channel 15 should not clash, but x < y here.\n\n&#x200B;\n\nAny ideas?",
+            "author_fullname": "t2_a1b2c3",
+            "saved": false,
+            "gilded": 0,
+            "clicked": false,
+            "title": "Zigbee coordinator drops after the update (thanks u/erin for the first hint)",
+            "link_flair_richtext": [],
+            "subreddit_name_prefixed": "r/homeassistant",
+            "hidden": false,
+            "link_flair_text": "Support",
+            "name": "t3_1k2m3n4",
+            "upvote_ratio": 0.94,
+            "author_flair_background_color": null,
+            "ups": 42,
+            "total_awards_received": 0,
+            "author_flair_text": null,
+            "score": 42,
+            "edited": false,
+            "is_self": true,
+            "created": 1793000000.0,
+            "selftext_html": "<!-- SC_OFF --><div class=\"md\"><p>After the 2026.10 update my coordinator drops every few hours.</p></div><!-- SC_ON -->",
+            "archived": false,
+            "over_18": false,
+            "spoiler": false,
+            "locked": false,
+            "distinguished": null,
+            "subreddit_id": "t5_2xyz9",
+            "id": "1k2m3n4",
+            "author": "alice",
+            "num_comments": 20,
+            "permalink": "/r/homeassistant/comments/1k2m3n4/zigbee_coordinator_drops_after_the_update/",
+            "url": "https://www.reddit.com/r/homeassistant/comments/1k2m3n4/zigbee_coordinator_drops_after_the_update/",
+            "stickied": false,
+            "created_utc": 1793000000.0,
+            "all_awardings": []
+          }
+        }
+      ],
+      "before": null
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "after": null,
+      "dist": null,
+      "modhash": "",
+      "geo_filter": "",
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "subreddit_id": "t5_2xyz9",
+            "author_flair_text": "Z2M user",
+            "id": "m1aaaa1",
+            "name": "t1_m1aaaa1",
+            "parent_id": "t3_1k2m3n4",
+            "link_id": "t3_1k2m3n4",
+            "author": "bob",
+            "author_fullname": "t2_b2c3d4",
+            "body": "Which coordinator? u/alice did you try the 7.4 firmware?\n\n    # not a heading, a code line\n    z2m --channel 15",
+            "body_html": "<div class=\"md\"><p>Which coordinator?</p></div>",
+            "score": 15,
+            "score_hidden": false,
+            "edited": false,
+            "is_submitter": false,
+            "distinguished": null,
+            "stickied": false,
+            "depth": 0,
+            "created_utc": 1793000600.0,
+            "replies": {
+              "kind": "Listing",
+              "data": {
+                "after": null,
+                "dist": null,
+                "modhash": "",
+                "geo_filter": "",
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "author_flair_text": null,
+                      "id": "m1bbbb2",
+                      "name": "t1_m1bbbb2",
+                      "parent_id": "t1_m1aaaa1",
+                      "link_id": "t3_1k2m3n4",
+                      "author": "alice",
+                      "body": "Sonoff dongle-E. Thanks u/bob, I will try it tonight.",
+                      "score": 8,
+                      "score_hidden": false,
+                      "edited": 1793100000.0,
+                      "is_submitter": true,
+                      "distinguished": null,
+                      "stickied": false,
+                      "depth": 1,
+                      "created_utc": 1793001200.0,
+                      "replies": {
+                        "kind": "Listing",
+                        "data": {
+                          "after": null,
+                          "dist": null,
+                          "modhash": "",
+                          "geo_filter": "",
+                          "children": [
+                            {
+                              "kind": "t1",
+                              "data": {
+                                "author_flair_text": null,
+                                "id": "m1cccc3",
+                                "name": "t1_m1cccc3",
+                                "parent_id": "t1_m1bbbb2",
+                                "link_id": "t3_1k2m3n4",
+                                "author": "carol",
+                                "body": "Same dongle here. /u/dave wrote a guide, see https://www.reddit.com/user/dave/comments/1k0zzzz/ and the [wiki](https://www.reddit.com/r/homeassistant/wiki/zigbee).",
+                                "score": 3,
+                                "score_hidden": false,
+                                "edited": false,
+                                "is_submitter": false,
+                                "distinguished": null,
+                                "stickied": false,
+                                "depth": 2,
+                                "created_utc": 1793001800.0,
+                                "replies": ""
+                              }
+                            },
+                            {
+                              "kind": "more",
+                              "data": {
+                                "count": 4,
+                                "name": "t1_m1dddd4",
+                                "id": "m1dddd4",
+                                "parent_id": "t1_m1bbbb2",
+                                "depth": 2,
+                                "children": ["m1dddd4", "m1eeee5", "m1ffff6", "m1gggg7"]
+                              }
+                            }
+                          ],
+                          "before": null
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "author_flair_text": null,
+                      "id": "m1hhhh8",
+                      "name": "t1_m1hhhh8",
+                      "parent_id": "t1_m1aaaa1",
+                      "link_id": "t3_1k2m3n4",
+                      "author": "[deleted]",
+                      "body": "[deleted]",
+                      "score": 1,
+                      "score_hidden": false,
+                      "edited": false,
+                      "is_submitter": false,
+                      "distinguished": null,
+                      "stickied": false,
+                      "depth": 1,
+                      "created_utc": 1793002400.0,
+                      "replies": ""
+                    }
+                  }
+                ],
+                "before": null
+              }
+            }
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "author_flair_text": "Mod",
+            "id": "m1iiii9",
+            "name": "t1_m1iiii9",
+            "parent_id": "t3_1k2m3n4",
+            "link_id": "t3_1k2m3n4",
+            "author": "dave",
+            "body": "Please post your logs. Rule 3 applies to every support thread.",
+            "score": 1,
+            "score_hidden": true,
+            "edited": false,
+            "is_submitter": false,
+            "distinguished": "moderator",
+            "stickied": true,
+            "depth": 0,
+            "created_utc": 1793003000.0,
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "author_flair_text": null,
+            "id": "m1jjjj0",
+            "name": "t1_m1jjjj0",
+            "parent_id": "t3_1k2m3n4",
+            "link_id": "t3_1k2m3n4",
+            "author": "[deleted]",
+            "body": "[removed]",
+            "score": 0,
+            "score_hidden": false,
+            "edited": false,
+            "is_submitter": false,
+            "distinguished": null,
+            "stickied": false,
+            "depth": 0,
+            "created_utc": 1793003600.0,
+            "replies": {
+              "kind": "Listing",
+              "data": {
+                "after": null,
+                "dist": null,
+                "modhash": "",
+                "geo_filter": "",
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "author_flair_text": null,
+                      "id": "m1kkkk1",
+                      "name": "t1_m1kkkk1",
+                      "parent_id": "t1_m1jjjj0",
+                      "link_id": "t3_1k2m3n4",
+                      "author": "erin",
+                      "body": "The comment above was removed, but the extension cable fixed it for me too.",
+                      "score": 5,
+                      "score_hidden": false,
+                      "edited": true,
+                      "is_submitter": false,
+                      "distinguished": null,
+                      "stickied": false,
+                      "depth": 1,
+                      "created_utc": 1793004200.0,
+                      "replies": {
+                        "kind": "Listing",
+                        "data": {
+                          "after": null,
+                          "dist": null,
+                          "modhash": "",
+                          "geo_filter": "",
+                          "children": [
+                            {
+                              "kind": "more",
+                              "data": {
+                                "count": 0,
+                                "name": "t1__",
+                                "id": "_",
+                                "parent_id": "t1_m1kkkk1",
+                                "depth": 2,
+                                "children": []
+                              }
+                            }
+                          ],
+                          "before": null
+                        }
+                      }
+                    }
+                  }
+                ],
+                "before": null
+              }
+            }
+          }
+        },
+        {
+          "kind": "more",
+          "data": {
+            "count": 7,
+            "name": "t1_m1llll2",
+            "id": "m1llll2",
+            "parent_id": "t3_1k2m3n4",
+            "depth": 0,
+            "children": ["m1llll2", "m1mmmm3", "m1nnnn4"]
+          }
+        }
+      ],
+      "before": null
+    }
+  }
+]

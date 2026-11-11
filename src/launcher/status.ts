@@ -1,4 +1,5 @@
 import type { SessionStatusOut } from '../fetch/service.js';
+import { quotedName } from '../output/quoted.js';
 
 // What `lurkd status` prints. The sources needing attention are projected to their id, name and
 // state: the login URL and the URL of the last block are forum addresses, and status output goes
@@ -24,10 +25,15 @@ export function attentionEntry(s: SessionStatusOut): AttentionEntry {
   return { id: s.id, name: s.name, state: s.state, block: s.lastBlock?.kind ?? null, needsAcknowledgment: s.needsAcknowledgment };
 }
 
+/**
+ * `url` is the page's address with no credential in it (D52): the page opens from a one-time
+ * link, which `lurkd open` mints, so status names that command rather than a link.
+ */
 export function statusJson(url: string, s: ApiStatus): string {
   return JSON.stringify({
     running: true,
     url,
+    open: 'lurkd open',
     pid: s.pid,
     version: s.version,
     browser: s.browser.state,
@@ -42,13 +48,14 @@ function attentionLine(a: AttentionEntry): string {
   if (a.block === 'login') parts.push('login needed');
   if (a.block === 'challenge') parts.push('human check pending');
   if (a.needsAcknowledgment) parts.push('needs acknowledgment');
-  return `  ${a.id} (${a.name}): ${parts.join(', ')}`;
+  // M1: the name can come from a forum page, so it is printed as quoted data.
+  return `  ${a.id} (name ${quotedName(a.name)}): ${parts.join(', ')}`;
 }
 
 export function statusText(url: string, s: ApiStatus): string {
   const lines = [
     'lurkd is running.',
-    `URL: ${url}`,
+    `Page: ${url} (run lurkd open: it opens the page with a link that works once)`,
     `PID: ${s.pid}`,
     `Version: ${s.version}`,
     `Browser: ${s.browser.state}${s.browser.lastError ? ` (${s.browser.lastError})` : ''}`,

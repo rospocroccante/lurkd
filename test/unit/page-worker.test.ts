@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { LurkdError } from '../../src/errors.js';
 import { readabilityInWorker, readabilityThread } from '../../src/extract/generic.js';
-import { activePageWorkers, runPageTask, workerEntry } from '../../src/extract/page-worker.js';
+import { activePageWorkers, PAGE_DEADLINE_MS, runPageTask, workerEntry } from '../../src/extract/page-worker.js';
 import { parseSelectorPage, readThreadList, readThreadPage, selectorPosts } from '../../src/extract/selectors.js';
 import type { Selectors } from '../../src/sources/schema.js';
 import { fixture, testSource } from '../helpers/common.js';
@@ -47,6 +47,22 @@ async function timed<T>(p: Promise<T>): Promise<{ ms: number; value?: T; error?:
   }
 }
 
+// Each worker starts tsx and loads the extractors; on a loaded machine that alone can take
+// seconds, so tests that start several workers get more than the default 5 s.
+const WORKER_TEST_TIMEOUT = 30_000;
+
+/**
+ * The longest a deadline-bound task may take on this machine right now: the deadline, plus twice
+ * what a trivial task costs now (worker start, message, terminate), plus 500 ms. Measured just
+ * before each use, so a machine slowed by parallel test files gets a bound that grows with the
+ * load, while an idle one keeps about the old fixed 4 s (3 s deadline + 1 s). A shape that
+ * escaped the deadline would still run past it: the bound only allows for the start-up cost.
+ */
+async function deadlineBound(): Promise<number> {
+  const trivial = await timed(runPageTask({ kind: 'readability', html: '<html><body><p>x</p></body></html>', url: THREAD }, () => new LurkdError('extraction_failed', 'too long')));
+  return PAGE_DEADLINE_MS + 2 * trivial.ms + 500;
+}
+
 describe('workerEntry', () => {
   it('starts the .ts module with the tsx loader from source and the .js module as it is from dist', () => {
     const here = pathToFileURL(path.join(ROOT, 'src/extract/page-worker.ts')).href;
@@ -72,7 +88,7 @@ describe('page tasks in the worker', () => {
     const article = fixture('generic/article.html');
     expect(await readabilityInWorker(article, 'https://f.example/a/1')).toEqual(readabilityThread(article, 'https://f.example/a/1'));
     expect(activePageWorkers()).toBe(0);
-  });
+  }, WORKER_TEST_TIMEOUT);
 
   it('passes a LurkdError from the worker on with its code and message', async () => {
     const bad = { ...SEL, author: 'span[[' };
@@ -81,22 +97,23 @@ describe('page tasks in the worker', () => {
       message: expect.stringContaining('selectors.author'),
     });
     await expect(readabilityInWorker('<html><body></body></html>', 'https://f.example/a/1')).rejects.toBeInstanceOf(LurkdError);
-  });
+  }, WORKER_TEST_TIMEOUT);
 
   it('stops a task at the deadline, terminates the worker and names the selectors', async () => {
     const wide = `<html><body>${Array.from({ length: 9 }, () => `<div>${'<i class="post">x</i>'.repeat(4_900)}</div>`).join('')}</body></html>`;
     const sel: Selectors = { post: 'i:first-of-type', author: 'b' };
+    const bound = await deadlineBound();
     const r = await timed(readThreadPage(source, wide, THREAD, sel, 1, 0));
     expect(r.error).toMatchObject({ code: 'extraction_failed', message: expect.stringMatching(/selectors\.post, selectors\.author .*took too long/) });
-    expect(r.ms).toBeLessThan(4_000);
+    expect(r.ms).toBeLessThan(bound);
     expect(activePageWorkers()).toBe(0);
     // A deadline shorter than the work: the same path, deterministic.
     const short = await timed(runPageTask({ kind: 'readability', html: fixture('generic/article.html'), url: THREAD }, () => new LurkdError('extraction_failed', 'too long'), 1));
     expect(short.error).toMatchObject({ code: 'extraction_failed', message: 'too long' });
     expect(activePageWorkers()).toBe(0);
-  });
+  }, WORKER_TEST_TIMEOUT);
 
-  it('ends the review worst in-bounds page shapes as a result or extraction_failed in under 4 s each', async () => {
+  it('ends the review worst in-bounds page shapes as a result or extraction_failed within the deadline each', async () => {
     const flatSel: Selectors = { post: 'i.post', author: 'b' };
     const flat = `<!doctype html><html><body>${Array.from({ length: 10 }, () => `<div>${'<i class="post">x</i>'.repeat(4_900)}</div>`).join('')}</body></html>`;
     const chain = (d: number) => `${'<div>'.repeat(d)}<p>x</p>${'</div>'.repeat(d)}`;
@@ -114,13 +131,15 @@ describe('page tasks in the worker', () => {
       ['deep quote *', deep, { post: 'body', author: 'b', quote: '*' }],
     ];
     for (const [label, html, sel] of cases) {
+      const bound = await deadlineBound();
       const r = await timed(readThreadPage(source, html, THREAD, sel, 1, 0));
-      expect(r.ms, label).toBeLessThan(4_000);
+      expect(r.ms, label).toBeLessThan(bound);
       if (r.error !== undefined) expect(r.error, label).toMatchObject({ code: 'extraction_failed' });
       expect(activePageWorkers(), label).toBe(0);
     }
+    const bound = await deadlineBound();
     const r = await timed(readabilityInWorker(deep, THREAD));
-    expect(r.ms).toBeLessThan(4_000);
+    expect(r.ms).toBeLessThan(bound);
     expect(r.error).toMatchObject({ code: 'extraction_failed' });
   }, 60_000);
 
